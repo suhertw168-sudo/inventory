@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>盤點工具</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --ink:#1b1f23;
+    --paper:#f7f5f1;
+    --card:#ffffff;
+    --line:#e3ddd2;
+    --accent:#c1572d;
+    --accent-deep:#8f3f1f;
+    --good:#2f6b4f;
+    --muted:#8a8378;
+    --shadow: 0 1px 2px rgba(27,31,35,0.04), 0 8px 24px rgba(27,31,35,0.06);
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; padding:0; height:100%;
+    background:var(--paper);
+    color:var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #app{
+    max-width:520px;
+    margin:0 auto;
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    padding-bottom:24px;
+  }
+  .topbar{
+    position:sticky; top:0; z-index:10;
+    background:var(--paper);
+    padding:14px 18px 10px;
+    border-bottom:1px solid var(--line);
+  }
+  .topbar-row{
+    display:flex; align-items:center; justify-content:space-between;
+    gap:10px;
+  }
+  .brand{
+    font-size:13px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--muted); font-weight:600;
+  }
+  .icon-btn{
+    border:none; background:transparent; color:var(--muted);
+    font-size:13px; padding:6px 10px; border-radius:8px; cursor:pointer;
+    font-weight:600;
+  }
+  .icon-btn:active{ background:#ece7dd; }
+  .progress-wrap{ margin-top:10px; }
+  .progress-bar{
+    height:6px; background:#e9e3d6; border-radius:4px; overflow:hidden;
+  }
+  .progress-fill{
+    height:100%; background:var(--accent);
+    transition: width .25s ease;
+    border-radius:4px;
+  }
+  .progress-label{
+    display:flex; justify-content:space-between;
+    font-size:12px; color:var(--muted); margin-top:6px;
+    font-weight:600;
+  }
+  main{
+    flex:1;
+    padding:18px;
+    display:flex;
+    flex-direction:column;
+    gap:16px;
+  }
+  /* ---- Setup screens ---- */
+  .panel{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:16px;
+    padding:18px;
+    box-shadow:var(--shadow);
+  }
+  .panel h2{
+    margin:0 0 4px;
+    font-size:19px;
+  }
+  .panel p.sub{
+    margin:0 0 14px;
+    font-size:13.5px;
+    color:var(--muted);
+    line-height:1.5;
+  }
+  .list-row{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 4px;
+    border-bottom:1px solid var(--line);
+    font-size:16px;
+  }
+  .list-row:last-child{ border-bottom:none; }
+  .list-row .meta{
+    font-size:12.5px; color:var(--muted); margin-top:2px;
+  }
+  .list-row .left{ flex:1; }
+  .chev{ color:var(--muted); font-size:14px; }
+  .btn{
+    display:block; width:100%;
+    background:var(--accent);
+    color:#fff; border:none;
+    font-size:16px; font-weight:700;
+    padding:15px 18px;
+    border-radius:12px;
+    cursor:pointer;
+    text-align:center;
+  }
+  .btn:active{ background:var(--accent-deep); }
+  .btn.secondary{
+    background:transparent;
+    color:var(--ink);
+    border:1.5px solid var(--line);
+  }
+  .btn.secondary:active{ background:#ece7dd; }
+  .btn.ghost{
+    background:transparent;
+    color:var(--accent-deep);
+    font-weight:700;
+    padding:10px;
+  }
+  .btn[disabled]{ opacity:.4; }
+  .field{ margin-bottom:14px; }
+  .field label{
+    display:block; font-size:12.5px; font-weight:700;
+    color:var(--muted); margin-bottom:6px;
+    text-transform:uppercase; letter-spacing:.04em;
+  }
+  .field input, .field textarea, .field select{
+    width:100%;
+    font-size:16px;
+    padding:12px 14px;
+    border:1.5px solid var(--line);
+    border-radius:10px;
+    background:#fff;
+    color:var(--ink);
+    font-family:inherit;
+  }
+  .field textarea{ min-height:90px; resize:vertical; line-height:1.5; }
+  .row-gap{ display:flex; gap:10px; }
+  .row-gap > *{ flex:1; }
+  .tag-row{ display:flex; flex-wrap:wrap; gap:8px; margin-top:4px; }
+  .tag{
+    background:#efe9dc; color:var(--ink);
+    border-radius:20px; padding:6px 12px;
+    font-size:13px; display:flex; align-items:center; gap:6px;
+  }
+  .tag button{
+    border:none; background:transparent; color:var(--accent-deep);
+    font-weight:700; cursor:pointer; font-size:14px; line-height:1;
+    padding:0;
+  }
+  /* ---- Counting card ---- */
+  .count-card{
+    background:var(--card);
+    border-radius:20px;
+    border:1px solid var(--line);
+    padding:24px 20px 20px;
+    box-shadow:var(--shadow);
+  }
+  .ctx-label{
+    font-size:13px; color:var(--muted); font-weight:600;
+    display:flex; align-items:center; gap:6px;
+  }
+  .style-name{
+    font-size:15px; color:var(--accent-deep); font-weight:700;
+    margin-top:2px;
+  }
+  .size-name{
+    font-size:34px; font-weight:800; margin:10px 0 18px;
+    letter-spacing:-0.01em;
+  }
+  .input-grid{
+    display:grid; grid-template-columns:1fr 1fr; gap:12px;
+    margin-bottom:18px;
+  }
+  .num-box{
+    border:1.5px solid var(--line);
+    border-radius:14px;
+    padding:14px 12px 12px;
+    background:#fcfbf8;
+  }
+  .num-box label{
+    font-size:12.5px; color:var(--muted); font-weight:700;
+    text-transform:uppercase; letter-spacing:.04em;
+  }
+  .num-box input{
+    width:100%; border:none; background:transparent;
+    font-size:38px; font-weight:800; color:var(--ink);
+    padding:4px 0 0; font-family:inherit;
+    -moz-appearance:textfield;
+  }
+  .num-box input::-webkit-outer-spin-button,
+  .num-box input::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
+  .num-box input:focus{ outline:none; }
+  .num-box.focused{ border-color:var(--accent); background:#fff; }
+  .sum-row{
+    display:flex; align-items:center; justify-content:space-between;
+    background:#f1ece1; border-radius:12px;
+    padding:13px 16px; margin-bottom:18px;
+  }
+  .sum-row .sum-label{ font-size:14px; color:var(--muted); font-weight:700; }
+  .sum-row .sum-val{ font-size:22px; font-weight:800; color:var(--good); }
+  .nav-row{ display:flex; gap:10px; }
+  .nav-row .btn{ font-size:15px; padding:14px; }
+  .keypad-hint{
+    text-align:center; font-size:12px; color:var(--muted); margin-top:10px;
+  }
+  /* color chip strip */
+  .chip-strip{
+    display:flex; gap:8px; overflow-x:auto; padding:2px 2px 8px;
+    -webkit-overflow-scrolling:touch;
+  }
+  .chip-strip::-webkit-scrollbar{ display:none; }
+  .chip{
+    flex:0 0 auto;
+    padding:8px 14px; border-radius:20px;
+    font-size:13px; font-weight:700;
+    border:1.5px solid var(--line);
+    background:#fff; color:var(--muted);
+    white-space:nowrap;
+  }
+  .chip.active{ background:var(--ink); color:#fff; border-color:var(--ink); }
+  .chip.done{ border-color:var(--good); color:var(--good); }
+  /* summary table */
+  table.summary{
+    width:100%; border-collapse:collapse; font-size:13.5px;
+  }
+  table.summary th, table.summary td{
+    border-bottom:1px solid var(--line);
+    padding:8px 6px; text-align:left;
+  }
+  table.summary th{ color:var(--muted); font-weight:700; font-size:12px; }
+  table.summary td.num{ text-align:right; font-weight:600; }
+  .empty-state{
+    text-align:center; padding:40px 16px; color:var(--muted);
+  }
+  .empty-state .big{ font-size:40px; margin-bottom:8px; }
+  .toast{
+    position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+    background:var(--ink); color:#fff; padding:10px 18px;
+    border-radius:10px; font-size:14px; font-weight:600;
+    box-shadow:var(--shadow); z-index:50;
+    opacity:0; transition:opacity .25s ease;
+    pointer-events:none;
+  }
+  .toast.show{ opacity:1; }
+  .footer-note{
+    text-align:center; font-size:11.5px; color:var(--muted); padding:6px 18px 0;
+  }
+  .loading{
+    display:flex; align-items:center; justify-content:center;
+    min-height:60vh; color:var(--muted); font-size:14px;
+  }
+</style>
+</head>
+<body>
+<div id="app"><div class="loading">載入中…</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+
+// ---------- Default seed data (from KY T-24 example) ----------
+var DEFAULT_SIZES_A = ["#6(JS)","#8(JM)","#10(JL)","JXL","XS","S","M","L","XL","2XL","3XL","4XL","5XL","6XL"];
+var DEFAULT_STRUCTURE = [
+  {
+    style: "KY T-24",
+    colors: [
+      {name:"白", sizes: DEFAULT_SIZES_A.slice()},
+      {name:"黑", sizes: DEFAULT_SIZES_A.slice()},
+      {name:"軍綠色", sizes: DEFAULT_SIZES_A.slice()},
+      {name:"克萊茵藍", sizes: DEFAULT_SIZES_A.slice()},
+      {name:"果綠", sizes: DEFAULT_SIZES_A.slice()},
+      {name:"沙棕色", sizes: DEFAULT_SIZES_A.slice()},
+      {name:"藏青色", sizes: DEFAULT_SIZES_A.slice(0,12)},
+      {name:"玫紅色", sizes: DEFAULT_SIZES_A.slice(0,11)},
+      {name:"紫", sizes: DEFAULT_SIZES_A.slice(0,11)}
+    ]
+  }
+];
+
+var APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwmO5IsfDIufHan6YCyML-TLBDV4XIiIOmbEuZn6W_TJza6zba5W6s5ht2WUsPnY7XU/exec";
+
+var state = {
+  structure: null,
+  counts: {},           // key "style|color|size" -> {shelf, stock}
+  view: "home",         // home | setup | counting | summary
+  curStyleIdx: 0,
+  curColorIdx: 0,
+  curSizeIdx: 0
+};
+
+function keyFor(style, color, size){ return style + "|" + color + "|" + size; }
+
+function showToast(msg){
+  var t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(function(){ t.classList.remove("show"); }, 1600);
+}
+
+// ---------- API helpers ----------
+async function apiGet(action){
+  var url = APPS_SCRIPT_URL + "?action=" + encodeURIComponent(action) + "&t=" + Date.now();
+  var res = await fetch(url, { method:"GET" });
+  if(!res.ok) throw new Error("API GET failed: " + res.status);
+  return await res.json();
+}
+async function apiPost(payload){
+  var res;
+  try{
+    res = await fetch(APPS_SCRIPT_URL, {
+      method:"POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" }, // avoids CORS preflight on Apps Script
+      body: JSON.stringify(payload)
+    });
+  }catch(networkErr){
+    throw new Error("網路連線失敗：" + networkErr.message);
+  }
+  if(!res.ok){
+    var bodyText = "";
+    try{ bodyText = await res.text(); }catch(e){}
+    throw new Error("伺服器回應錯誤 " + res.status + (bodyText ? "：" + bodyText.slice(0,200) : ""));
+  }
+  var json;
+  try{
+    json = await res.json();
+  }catch(e){
+    throw new Error("伺服器回應格式錯誤（不是有效的 JSON）");
+  }
+  if(json && json.ok === false){
+    throw new Error("伺服器拒絕：" + (json.error || "未知原因"));
+  }
+  return json;
+}
+
+// ---------- Storage (backed by Google Sheet via Apps Script) ----------
+async function loadStructure(){
+  try{
+    var data = await apiGet("structure");
+    if(data && data.length){ return data; }
+  }catch(e){ console.error("loadStructure failed", e); showToast("讀取結構失敗，請檢查網路"); }
+  return null;
+}
+async function saveStructure(structure){
+  try{
+    await apiPost({ action:"saveStructure", structure: structure });
+    return true;
+  }catch(e){
+    console.error("save structure failed", e);
+    showToast("儲存結構失敗：" + (e && e.message ? e.message : "未知錯誤"));
+    return false;
+  }
+}
+async function loadAllCounts(structure){
+  try{
+    var counts = await apiGet("counts");
+    return counts || {};
+  }catch(e){ console.error("loadAllCounts failed", e); showToast("讀取盤點資料失敗，請檢查網路"); }
+  return {};
+}
+async function saveCount(style, color, size, shelf, stock){
+  var key = keyFor(style, color, size);
+  var val = {shelf: shelf, stock: stock, total: (Number(shelf)||0)+(Number(stock)||0)};
+  state.counts[key] = val; // optimistic local update so UI feels instant
+  try{
+    await apiPost({ action:"saveCount", style:style, color:color, size:size, shelf:shelf, stock:stock });
+  }catch(e){ console.error("save count failed", e); showToast("儲存失敗，請檢查網路"); }
+}
+async function clearAllCountsRemote(){
+  try{
+    await apiPost({ action:"clearCounts" });
+  }catch(e){ console.error("clear counts failed", e); showToast("清空失敗，請檢查網路"); }
+}
+async function regenerateSummarySheetsRemote(){
+  try{
+    await apiPost({ action:"regenerate" });
+    return true;
+  }catch(e){ console.error("regenerate failed", e); showToast("更新彙總分頁失敗，請檢查網路"); return false; }
+}
+
+// ---------- Init ----------
+var CUSTOM_STYLE_ORDER = [
+  "UA2350","SR230","SR_SH2301",
+  "CP101","CP102","CP103","CP104","CP105","CP106",
+  "AG18000","AG21000","AG_L210","AG24000","AG28000",
+  "AG1000","AG2000","AG3000",
+  "KY T-24","KY T-L28",
+  "PL01","PL02","PL03","PL04","PL05",
+  "TH02","TH03","TH04",
+  "CAP-510","CAP-520","CAP-6","CAP-BH",
+  "GILDAN-76000系列"
+];
+
+function sortStructureByStyle(structure){
+  var orderMap = {};
+  CUSTOM_STYLE_ORDER.forEach(function(name, idx){ orderMap[name] = idx; });
+  return structure.slice().sort(function(a, b){
+    var ai = orderMap.hasOwnProperty(a.style) ? orderMap[a.style] : CUSTOM_STYLE_ORDER.length + 1000;
+    var bi = orderMap.hasOwnProperty(b.style) ? orderMap[b.style] : CUSTOM_STYLE_ORDER.length + 1000;
+    if(ai !== bi) return ai - bi;
+    return a.style.localeCompare(b.style, 'zh-Hant');
+  });
+}
+
+async function init(){
+  var structure = null;
+  var counts = {};
+  try{
+    var all = await apiGet("all");
+    if(all && all.structure && all.structure.length){
+      structure = all.structure;
+      counts = all.counts || {};
+    }
+  }catch(e){
+    console.error("init load failed", e);
+    showToast("讀取資料失敗，請檢查網路");
+  }
+  if(!structure){
+    structure = DEFAULT_STRUCTURE;
+    await saveStructure(structure);
+  }
+  state.structure = sortStructureByStyle(structure);
+  state.counts = counts;
+  state.view = "home";
+  render();
+}
+
+// ---------- Progress helpers ----------
+function totalSizeSlots(structure){
+  var n = 0;
+  structure.forEach(function(st){ st.colors.forEach(function(c){ n += c.sizes.length; }); });
+  return n;
+}
+function doneSizeSlots(structure, counts){
+  var n = 0;
+  structure.forEach(function(st){
+    st.colors.forEach(function(c){
+      c.sizes.forEach(function(sz){
+        var k = keyFor(st.style, c.name, sz);
+        if(counts[k] !== undefined){ n++; }
+      });
+    });
+  });
+  return n;
+}
+function colorDone(style, color, counts){
+  return color.sizes.every(function(sz){ return counts[keyFor(style.style, color.name, sz)] !== undefined; });
+}
+function styleProgress(style, counts){
+  var total=0, done=0;
+  style.colors.forEach(function(c){
+    c.sizes.forEach(function(sz){
+      total++;
+      if(counts[keyFor(style.style, c.name, sz)] !== undefined) done++;
+    });
+  });
+  return {total:total, done:done};
+}
+
+// ---------- Render root ----------
+function render(){
+  var app = document.getElementById("app");
+  if(state.view === "home") app.innerHTML = renderHome();
+  else if(state.view === "setup") app.innerHTML = renderSetup();
+  else if(state.view === "counting") app.innerHTML = renderCounting();
+  else if(state.view === "summary") app.innerHTML = renderSummary();
+  bindEvents();
+}
+
+// ---------- HOME ----------
+function renderHome(){
+  var structure = state.structure;
+  var total = totalSizeSlots(structure);
+  var done = doneSizeSlots(structure, state.counts);
+  var pct = total ? Math.round(done/total*100) : 0;
+
+  var rows = structure.map(function(st, sIdx){
+    var p = styleProgress(st, state.counts);
+    var pct2 = p.total ? Math.round(p.done/p.total*100) : 0;
+    return '<div class="list-row" data-action="open-style" data-style-idx="'+sIdx+'">'+
+      '<div class="left">'+escapeHtml(st.style)+
+      '<div class="meta">'+st.colors.length+' 色 · 已完成 '+p.done+'/'+p.total+'（'+pct2+'%）</div>'+
+      '</div><div class="chev">›</div></div>';
+  }).join("");
+
+  return ''+
+  '<div class="topbar">'+
+    '<div class="topbar-row">'+
+      '<div class="brand">盤點工具</div>'+
+      '<button class="icon-btn" data-action="goto-setup">編輯結構</button>'+
+    '</div>'+
+    '<div class="progress-wrap">'+
+      '<div class="progress-bar"><div class="progress-fill" style="width:'+pct+'%"></div></div>'+
+      '<div class="progress-label"><span>整體進度 '+done+' / '+total+'</span><span>'+pct+'%</span></div>'+
+    '</div>'+
+  '</div>'+
+  '<main>'+
+    '<div class="panel">'+
+      '<h2>選擇要盤點的款式</h2>'+
+      '<p class="sub">點款式進入，逐色逐尺寸填寫，資料即時同步，多人可同時進行不同款式或顏色。</p>'+
+      (rows || emptyStateHtml('還沒有設定款式', '先到「編輯結構」加入款式、顏色與尺寸'))+
+    '</div>'+
+    '<button class="btn secondary" data-action="goto-summary">查看彙總 / 匯出貼回 Sheet</button>'+
+  '</main>'+
+  '<div class="footer-note">填寫的數字會即時存到雲端，所有人共用同一份資料</div>';
+}
+
+function emptyStateHtml(title, sub){
+  return '<div class="empty-state"><div class="big">📋</div><div><strong>'+title+'</strong></div><div style="font-size:13px;margin-top:6px;">'+sub+'</div></div>';
+}
+
+// ---------- SETUP ----------
+function renderSetup(){
+  var structure = state.structure;
+  var rows = structure.map(function(st, idx){
+    return '<div class="list-row">'+
+      '<div class="left">'+escapeHtml(st.style)+'<div class="meta">'+st.colors.map(function(c){return escapeHtml(c.name);}).join('、')+'</div></div>'+
+      '<button class="icon-btn" data-action="delete-style" data-style-idx="'+idx+'" style="color:var(--accent-deep)">刪除</button>'+
+    '</div>';
+  }).join("");
+
+  return ''+
+  '<div class="topbar"><div class="topbar-row">'+
+    '<button class="icon-btn" data-action="goto-home">‹ 返回</button>'+
+    '<div class="brand">編輯結構</div>'+
+    '<span style="width:60px"></span>'+
+  '</div></div>'+
+  '<main>'+
+    '<div class="panel">'+
+      '<h2>目前的款式</h2>'+
+      '<p class="sub">每個款式可以有多個顏色，每個顏色有自己的尺寸清單。</p>'+
+      (rows || emptyStateHtml('尚無款式',''))+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>批次匯入（可分段貼上）</h2>'+
+      '<p class="sub">貼上一段 JSON 結構資料，按匯入後會把這幾個款式加進現有清單（同名款式會覆蓋更新，其他款式不受影響）。資料太長可以分成幾段、一段一段貼，不用一次貼完整段。</p>'+
+      '<div class="field">'+
+        '<textarea id="bulk-import-data" rows="6" placeholder="貼上 JSON 結構資料（可以只貼一部分款式）..."></textarea>'+
+      '</div>'+
+      '<button class="btn" data-action="bulk-import">匯入這一段（加入現有款式）</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>新增單一款式</h2>'+
+      '<div class="field">'+
+        '<label>款式名稱</label>'+
+        '<input type="text" id="new-style-name" placeholder="例如：CP101(1)">'+
+      '</div>'+
+      '<div class="field">'+
+        '<label>顏色清單（每行一個顏色）</label>'+
+        '<textarea id="new-style-colors" placeholder="白&#10;黑&#10;軍綠色"></textarea>'+
+      '</div>'+
+      '<div class="field">'+
+        '<label>尺寸清單（每行一個尺寸，套用到上面所有顏色）</label>'+
+        '<textarea id="new-style-sizes" placeholder="#6(JS)&#10;#8(JM)&#10;S&#10;M&#10;L&#10;XL">'+DEFAULT_SIZES_A.join("\n")+'</textarea>'+
+      '</div>'+
+      '<button class="btn" data-action="add-style">新增這個款式</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>整理原始資料（加快開啟速度）</h2>'+
+      '<p class="sub">每次填寫架上/庫存都會新增一行記錄，用越久資料筆數越多。按這個會清掉每個格位重複的舊記錄，只保留最新一筆，盤點數字不會變、只是表格變小、開啟速度變快。建議每隔一段時間（例如每天結束時）按一次。</p>'+
+      '<button class="btn secondary" data-action="compact-raw">整理原始資料</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>清除全部資料</h2>'+
+      '<p class="sub">會清空所有人已輸入的盤點數字（款式結構不受影響）。請小心使用。</p>'+
+      '<button class="btn secondary" data-action="clear-counts" style="color:var(--accent-deep);border-color:var(--accent-deep)">清空所有盤點數字</button>'+
+    '</div>'+
+  '</main>';
+}
+
+// ---------- COUNTING ----------
+function renderCounting(){
+  var st = state.structure[state.curStyleIdx];
+  var col = st.colors[state.curColorIdx];
+  var size = col.sizes[state.curSizeIdx];
+  var key = keyFor(st.style, col.name, size);
+  var existing = state.counts[key] || {shelf:"", stock:""};
+  var p = styleProgress(st, state.counts);
+  var pct = p.total ? Math.round(p.done/p.total*100) : 0;
+
+  var chips = col.sizes.map(function(sz, i){
+    var k = keyFor(st.style, col.name, sz);
+    var cls = "chip";
+    if(i === state.curSizeIdx) cls += " active";
+    else if(state.counts[k] !== undefined) cls += " done";
+    return '<button class="'+cls+'" data-action="jump-size" data-size-idx="'+i+'">'+escapeHtml(sz)+'</button>';
+  }).join("");
+
+  var colorChips = st.colors.map(function(c, i){
+    var cls = "chip";
+    if(i === state.curColorIdx) cls += " active";
+    else if(colorDone(st, c, state.counts)) cls += " done";
+    return '<button class="'+cls+'" data-action="jump-color" data-color-idx="'+i+'">'+escapeHtml(c.name)+'</button>';
+  }).join("");
+
+  var shelfVal = existing.shelf !== undefined ? existing.shelf : "";
+  var stockVal = existing.stock !== undefined ? existing.stock : "";
+  var total = (Number(shelfVal)||0) + (Number(stockVal)||0);
+
+  var isFirst = state.curStyleIdx === 0 && state.curColorIdx === 0 && state.curSizeIdx === 0;
+  var isLast = isLastSlot();
+
+  return ''+
+  '<div class="topbar">'+
+    '<div class="topbar-row">'+
+      '<button class="icon-btn" data-action="goto-home">‹ 款式列表</button>'+
+      '<div class="brand">盤點中</div>'+
+      '<span style="width:70px"></span>'+
+    '</div>'+
+    '<div class="progress-wrap">'+
+      '<div class="progress-bar"><div class="progress-fill" style="width:'+pct+'%"></div></div>'+
+      '<div class="progress-label"><span>'+escapeHtml(st.style)+' 進度 '+p.done+'/'+p.total+'</span><span>'+pct+'%</span></div>'+
+    '</div>'+
+  '</div>'+
+  '<main>'+
+    '<div class="chip-strip">'+colorChips+'</div>'+
+    '<div class="count-card">'+
+      '<div class="ctx-label">款式 / 顏色</div>'+
+      '<div class="style-name">'+escapeHtml(st.style)+' · '+escapeHtml(col.name)+'</div>'+
+      '<div class="size-name">'+escapeHtml(size)+'</div>'+
+      '<div class="input-grid">'+
+        '<div class="num-box" id="shelf-box">'+
+          '<label>架上</label>'+
+          '<input type="number" inputmode="numeric" pattern="[0-9]*" id="shelf-input" value="'+shelfVal+'" placeholder="0">'+
+        '</div>'+
+        '<div class="num-box" id="stock-box">'+
+          '<label>庫存</label>'+
+          '<input type="number" inputmode="numeric" pattern="[0-9]*" id="stock-input" value="'+stockVal+'" placeholder="0">'+
+        '</div>'+
+      '</div>'+
+      '<div class="sum-row"><span class="sum-label">加總</span><span class="sum-val" id="sum-val">'+total+'</span></div>'+
+      '<div class="nav-row">'+
+        '<button class="btn secondary" data-action="prev-slot" '+(isFirst?'disabled':'')+'>‹ 上一項</button>'+
+        '<button class="btn" data-action="next-slot">'+(isLast?'完成 ✓':'下一項 ›')+'</button>'+
+      '</div>'+
+    '</div>'+
+    '<div class="chip-strip" style="margin-top:-6px;">'+chips+'</div>'+
+  '</main>';
+}
+
+function isLastSlot(){
+  var st = state.structure[state.curStyleIdx];
+  var col = st.colors[state.curColorIdx];
+  return state.curStyleIdx === state.structure.length - 1 &&
+         state.curColorIdx === st.colors.length - 1 &&
+         state.curSizeIdx === col.sizes.length - 1;
+}
+
+// ---------- SUMMARY ----------
+function renderSummary(){
+  var structure = state.structure;
+  var rowsHtml = "";
+  var tsvLines = ["款式\t顏色\t尺寸\t架上\t庫存\t加總"];
+
+  structure.forEach(function(st){
+    st.colors.forEach(function(col){
+      col.sizes.forEach(function(sz){
+        var key = keyFor(st.style, col.name, sz);
+        var c = state.counts[key];
+        var shelf = c ? c.shelf : "";
+        var stock = c ? c.stock : "";
+        var total = c ? c.total : "";
+        rowsHtml += '<tr><td>'+escapeHtml(st.style)+'</td><td>'+escapeHtml(col.name)+'</td><td>'+escapeHtml(sz)+'</td>'+
+          '<td class="num">'+(shelf===""?'—':shelf)+'</td><td class="num">'+(stock===""?'—':stock)+'</td><td class="num"><strong>'+(total===""?'—':total)+'</strong></td></tr>';
+        tsvLines.push([st.style, col.name, sz, shelf, stock, total].join("\t"));
+      });
+    });
+  });
+
+  return ''+
+  '<div class="topbar"><div class="topbar-row">'+
+    '<button class="icon-btn" data-action="goto-home">‹ 返回</button>'+
+    '<div class="brand">彙總 / 匯出</div>'+
+    '<span style="width:60px"></span>'+
+  '</div></div>'+
+  '<main>'+
+    '<div class="panel">'+
+      '<h2>更新 Google Sheet 彙總分頁</h2>'+
+      '<p class="sub">會在你的 Google Sheet 裡自動產生「彙總_款式名稱」分頁（不會動到原本既有的分頁），每個品項一個分頁，內容是該品項所有顏色、尺寸的架上／庫存／加總明細與總計。需要重新整理 Sheet 才會看到新分頁。</p>'+
+      '<button class="btn" data-action="regenerate-sheets">更新 Google Sheet 彙總分頁</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>備用：下載 Excel 快照</h2>'+
+      '<p class="sub">如果想要一份獨立的 Excel 檔（不在 Google Sheet 裡），可以用這個，結構跟上面的彙總分頁一樣。</p>'+
+      '<button class="btn secondary" data-action="download-xlsx">下載 Excel（.xlsx）</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>明細</h2>'+
+      '<div style="overflow-x:auto;">'+
+        '<table class="summary"><thead><tr><th>款式</th><th>顏色</th><th>尺寸</th><th>架上</th><th>庫存</th><th>加總</th></tr></thead>'+
+        '<tbody>'+rowsHtml+'</tbody></table>'+
+      '</div>'+
+    '</div>'+
+  '</main>'+
+  '<div id="tsv-data" style="display:none;">'+escapeHtml(tsvLines.join("\n"))+'</div>';
+}
+
+// ---------- Excel export (one worksheet per 款式) ----------
+function sanitizeSheetName(name, usedNames){
+  var clean = String(name).replace(/[\\\/\?\*\[\]:]/g, "_").slice(0,31);
+  if(!clean) clean = "Sheet";
+  var base = clean, n = 1;
+  while(usedNames[clean]){
+    n++;
+    var suffix = "_" + n;
+    clean = base.slice(0, 31 - suffix.length) + suffix;
+  }
+  usedNames[clean] = true;
+  return clean;
+}
+
+function buildWorkbook(){
+  var wb = XLSX.utils.book_new();
+  var usedNames = {};
+  state.structure.forEach(function(st){
+    var rows = [["顏色","尺寸","架上","庫存","加總"]];
+    var sumShelf = 0, sumStock = 0, sumTotal = 0;
+    st.colors.forEach(function(col){
+      col.sizes.forEach(function(sz){
+        var key = keyFor(st.style, col.name, sz);
+        var c = state.counts[key];
+        var shelf = c && c.shelf !== "" ? Number(c.shelf)||0 : (c ? 0 : "");
+        var stock = c && c.stock !== "" ? Number(c.stock)||0 : (c ? 0 : "");
+        var total = c ? Number(c.total)||0 : "";
+        rows.push([col.name, sz, shelf, stock, total]);
+        if(c){
+          sumShelf += Number(c.shelf)||0;
+          sumStock += Number(c.stock)||0;
+          sumTotal += Number(c.total)||0;
+        }
+      });
+    });
+    rows.push(["總計", "", sumShelf, sumStock, sumTotal]);
+    var ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [{wch:14},{wch:12},{wch:8},{wch:8},{wch:8}];
+    var sheetName = sanitizeSheetName(st.style, usedNames);
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  });
+  return wb;
+}
+
+function pad2(n){ return n < 10 ? "0"+n : ""+n; }
+function dateStr(){
+  var d = new Date();
+  return d.getFullYear() + pad2(d.getMonth()+1) + pad2(d.getDate());
+}
+
+function downloadWorkbook(){
+  if(typeof XLSX === "undefined"){
+    showToast("Excel 函式庫載入失敗，請檢查網路後重試");
+    return;
+  }
+  var wb = buildWorkbook();
+  XLSX.writeFile(wb, "盤點結果_" + dateStr() + ".xlsx");
+}
+
+// ---------- Helpers ----------
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];
+  });
+}
+
+// ---------- Events ----------
+function bindEvents(){
+  var app = document.getElementById("app");
+
+  app.querySelectorAll('[data-action]').forEach(function(el){
+    el.addEventListener('click', async function(){
+      var action = el.getAttribute('data-action');
+
+      if(action === 'goto-home'){ state.view = "home"; render(); }
+      else if(action === 'goto-setup'){ state.view = "setup"; render(); }
+      else if(action === 'goto-summary'){ state.view = "summary"; render(); }
+
+      else if(action === 'open-style'){
+        state.curStyleIdx = Number(el.getAttribute('data-style-idx'));
+        state.curColorIdx = 0;
+        state.curSizeIdx = 0;
+        state.view = "counting";
+        render();
+      }
+
+      else if(action === 'jump-color'){
+        state.curColorIdx = Number(el.getAttribute('data-color-idx'));
+        state.curSizeIdx = 0;
+        await persistCurrentInputs();
+        render();
+      }
+      else if(action === 'jump-size'){
+        await persistCurrentInputs();
+        state.curSizeIdx = Number(el.getAttribute('data-size-idx'));
+        render();
+      }
+
+      else if(action === 'next-slot'){
+        await persistCurrentInputs();
+        advanceSlot(1);
+      }
+      else if(action === 'prev-slot'){
+        await persistCurrentInputs();
+        advanceSlot(-1);
+      }
+
+      else if(action === 'bulk-import'){
+        var raw = document.getElementById('bulk-import-data').value.trim();
+        if(!raw){ showToast("請先貼上資料"); return; }
+        var parsed;
+        try{
+          parsed = JSON.parse(raw);
+        }catch(e){
+          showToast("JSON 格式錯誤，請確認這一段有完整複製（開頭要有 [ 結尾要有 ]）");
+          return;
+        }
+        if(!Array.isArray(parsed) || parsed.length===0){
+          showToast("資料格式不正確（應該是一個陣列）");
+          return;
+        }
+
+        // 合併：同名款式覆蓋更新，其他款式不受影響
+        var merged = state.structure.slice();
+        var nameToIdx = {};
+        merged.forEach(function(item, idx){ nameToIdx[item.style] = idx; });
+        var addedNames = [];
+        parsed.forEach(function(item){
+          if(nameToIdx.hasOwnProperty(item.style)){
+            merged[nameToIdx[item.style]] = item;
+          } else {
+            nameToIdx[item.style] = merged.length;
+            merged.push(item);
+          }
+          addedNames.push(item.style);
+        });
+
+        if(!confirm('這一段有 '+parsed.length+' 個款式（'+addedNames.slice(0,5).join('、')+(addedNames.length>5?'...':'')+'），會加入或更新到現有清單，合併後總共 '+merged.length+' 個款式。確定繼續嗎？')){
+          return;
+        }
+        el.disabled = true;
+        el.textContent = "匯入中…";
+        var ok = false;
+        try{
+          ok = await saveStructure(merged);
+        }catch(e){
+          console.error("bulk-import unexpected error", e);
+          ok = false;
+        }
+        el.disabled = false;
+        el.textContent = "匯入這一段（加入現有款式）";
+        if(ok){
+          state.structure = sortStructureByStyle(merged);
+          document.getElementById('bulk-import-data').value = "";
+          showToast("已加入這段，目前共 "+merged.length+" 個款式");
+          render();
+        }else{
+          showToast("匯入失敗，資料沒有寫入，請重試或檢查網路");
+        }
+        return;
+      }
+
+      else if(action === 'add-style'){
+        var name = document.getElementById('new-style-name').value.trim();
+        var colorsRaw = document.getElementById('new-style-colors').value;
+        var sizesRaw = document.getElementById('new-style-sizes').value;
+        var colors = colorsRaw.split("\n").map(function(s){return s.trim();}).filter(Boolean);
+        var sizes = sizesRaw.split("\n").map(function(s){return s.trim();}).filter(Boolean);
+        if(!name || colors.length===0 || sizes.length===0){
+          showToast("請填入款式名稱、至少一個顏色與一個尺寸");
+          return;
+        }
+        state.structure.push({
+          style: name,
+          colors: colors.map(function(cn){ return {name: cn, sizes: sizes.slice()}; })
+        });
+        state.structure = sortStructureByStyle(state.structure);
+        await saveStructure(state.structure);
+        showToast("已新增「"+name+"」");
+        render();
+      }
+
+      else if(action === 'delete-style'){
+        var idx = Number(el.getAttribute('data-style-idx'));
+        if(confirm('確定刪除「'+state.structure[idx].style+'」？這不會刪除已輸入的盤點數字，但畫面上會看不到。')){
+          state.structure.splice(idx,1);
+          await saveStructure(state.structure);
+          render();
+        }
+      }
+
+      else if(action === 'compact-raw'){
+        el.disabled = true;
+        el.textContent = "整理中…";
+        try{
+          await apiPost({ action:"compactRaw" });
+          showToast("已整理完成，表格已變小");
+        }catch(e){
+          console.error("compact raw failed", e);
+          showToast("整理失敗：" + (e && e.message ? e.message : "未知錯誤"));
+        }
+        el.disabled = false;
+        el.textContent = "整理原始資料";
+      }
+
+      else if(action === 'clear-counts'){
+        if(confirm('確定要清空所有人已輸入的盤點數字嗎？此動作無法復原。')){
+          await clearAllCountsRemote();
+          state.counts = {};
+          showToast("已清空");
+          render();
+        }
+      }
+
+      else if(action === 'download-xlsx'){
+        downloadWorkbook();
+      }
+
+      else if(action === 'regenerate-sheets'){
+        el.disabled = true;
+        el.textContent = "更新中…";
+        var ok = await regenerateSummarySheetsRemote();
+        if(ok){ showToast("已在 Google Sheet 產生彙總分頁"); }
+        el.disabled = false;
+        el.textContent = "更新 Google Sheet 彙總分頁";
+      }
+
+      else if(action === 'copy-tsv'){
+        var data = document.getElementById('tsv-data').textContent;
+        try{
+          await navigator.clipboard.writeText(data);
+          showToast("已複製，到 Sheet 貼上即可");
+        }catch(e){
+          showToast("複製失敗，請手動選取文字");
+        }
+      }
+    });
+  });
+
+  // live sum + autosave on blur
+  var shelfInput = document.getElementById('shelf-input');
+  var stockInput = document.getElementById('stock-input');
+  if(shelfInput && stockInput){
+    function updateSum(){
+      var t = (Number(shelfInput.value)||0) + (Number(stockInput.value)||0);
+      document.getElementById('sum-val').textContent = t;
+    }
+    shelfInput.addEventListener('input', updateSum);
+    stockInput.addEventListener('input', updateSum);
+    shelfInput.addEventListener('focus', function(){ document.getElementById('shelf-box').classList.add('focused'); });
+    shelfInput.addEventListener('blur', function(){ document.getElementById('shelf-box').classList.remove('focused'); persistCurrentInputs(); });
+    stockInput.addEventListener('focus', function(){ document.getElementById('stock-box').classList.add('focused'); });
+    stockInput.addEventListener('blur', function(){ document.getElementById('stock-box').classList.remove('focused'); persistCurrentInputs(); });
+  }
+}
+
+async function persistCurrentInputs(){
+  if(state.view !== "counting") return;
+  var shelfInput = document.getElementById('shelf-input');
+  var stockInput = document.getElementById('stock-input');
+  if(!shelfInput || !stockInput) return;
+  var shelf = shelfInput.value;
+  var stock = stockInput.value;
+  if(shelf === "" && stock === "") return; // nothing entered, don't mark as done
+  var st = state.structure[state.curStyleIdx];
+  var col = st.colors[state.curColorIdx];
+  var size = col.sizes[state.curSizeIdx];
+  await saveCount(st.style, col.name, size, shelf, stock);
+}
+
+function advanceSlot(dir){
+  var st = state.structure[state.curStyleIdx];
+  var col = st.colors[state.curColorIdx];
+  state.curSizeIdx += dir;
+
+  if(state.curSizeIdx >= col.sizes.length){
+    state.curColorIdx++;
+    state.curSizeIdx = 0;
+    if(state.curColorIdx >= st.colors.length){
+      state.curStyleIdx++;
+      state.curColorIdx = 0;
+      if(state.curStyleIdx >= state.structure.length){
+        // finished everything
+        state.curStyleIdx = state.structure.length - 1;
+        state.curColorIdx = state.structure[state.curStyleIdx].colors.length - 1;
+        state.curSizeIdx = state.structure[state.curStyleIdx].colors[state.curColorIdx].sizes.length - 1;
+        showToast("這個款式已經盤完了 🎉");
+        state.view = "home";
+        render();
+        return;
+      }
+    }
+  } else if(state.curSizeIdx < 0){
+    state.curColorIdx--;
+    if(state.curColorIdx < 0){
+      state.curStyleIdx--;
+      if(state.curStyleIdx < 0){ state.curStyleIdx = 0; state.curColorIdx = 0; state.curSizeIdx = 0; render(); return; }
+      state.curColorIdx = state.structure[state.curStyleIdx].colors.length - 1;
+    }
+    state.curSizeIdx = state.structure[state.curStyleIdx].colors[state.curColorIdx].sizes.length - 1;
+  }
+  render();
+}
+
+init();
+})();
+</script>
+</body>
+</html>
