@@ -418,6 +418,9 @@ var DEFAULT_SIZES_A = ["#6(JS)","#8(JM)","#10(JL)","JXL","XS","S","M","L","XL","
 
 var APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwmO5IsfDIufHan6YCyML-TLBDV4XIiIOmbEuZn6W_TJza6zba5W6s5ht2WUsPnY7XU/exec";
 
+// 管理員密碼（按右上角「管理用設定」時會詢問）。需要修改密碼時，直接改這一行的引號內文字即可
+var ADMIN_PASSWORD = "6666";
+
 var state = {
   structure: null,
   counts: {},           // key "style|color|size" -> {shelf, stock}
@@ -993,7 +996,7 @@ function renderSummary(){
   // 先把所有資料按品牌分組
   function buildStyleTableHtml(st){
     var html = '<div style="overflow-x:auto;">'+
-      '<table class="summary"><thead><tr><th>顏色</th><th>尺寸</th><th>架上</th><th>庫存</th><th>加總</th></tr></thead><tbody>';
+      '<table class="summary"><thead><tr><th><span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#e87a3e; margin-right:4px; vertical-align:middle;"></span>顏色</th><th>尺寸</th><th>架上</th><th>庫存</th><th>加總</th></tr></thead><tbody>';
     var styleShelf=0, styleStock=0, styleTotal=0, missingCount=0;
     st.colors.forEach(function(col){
       col.sizes.forEach(function(sz){
@@ -1005,8 +1008,10 @@ function renderSummary(){
         var stock = c ? c.stock : "";
         var total = c ? c.total : "";
         var rowStyle = isMissing ? ' style="background:#fff4e6;"' : '';
-        var missingTag = isMissing ? ' <span style="background:#e87a3e; color:#fff; font-size:10px; padding:2px 6px; border-radius:6px; font-weight:700; margin-left:4px;">未輸入</span>' : '';
-        html += '<tr'+rowStyle+'><td>'+escapeHtml(col.name)+missingTag+'</td><td>'+escapeHtml(sz)+'</td>'+
+        var colorCell = isMissing
+          ? '<td style="color:#c45a1e; font-weight:700; white-space:nowrap;"><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#e87a3e; margin-right:6px; vertical-align:middle;"></span>'+escapeHtml(col.name)+'</td>'
+          : '<td>'+escapeHtml(col.name)+'</td>';
+        html += '<tr'+rowStyle+'>'+colorCell+'<td>'+escapeHtml(sz)+'</td>'+
           '<td class="num">'+(shelf===""?'—':shelf)+'</td>'+
           '<td class="num">'+(stock===""?'—':stock)+'</td>'+
           '<td class="num"><strong>'+(total===""?'—':total)+'</strong></td></tr>';
@@ -1216,7 +1221,16 @@ function bindEvents(){
         }
         render();
       }
-      else if(action === 'goto-setup'){ state.view = "setup"; render(); }
+      else if(action === 'goto-setup'){
+        var pwd = prompt('請輸入管理員密碼：');
+        if(pwd === null) return; // 使用者按取消
+        if(pwd !== ADMIN_PASSWORD){
+          showToast("密碼錯誤");
+          return;
+        }
+        state.view = "setup";
+        render();
+      }
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
 
       else if(action === 'open-brand'){
