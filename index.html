@@ -1444,15 +1444,7 @@ function bindEvents(){
       }
 
       else if(action === 'clear-counts'){
-        // 第一層：確認意圖
-        if(!confirm('⚠️ 警告：這個動作會清空所有人已經輸入的盤點數字，且無法復原。\n\n確定要繼續嗎？')){
-          return;
-        }
-        // 第二層：要求輸入指定文字才能執行（防止連點誤觸）
-        var typed = prompt('為了避免誤觸，請輸入「確認清空」四個字，才會真正執行清空。');
-        if(typed === null) return; // 使用者按取消
-        if(typed.trim() !== '確認清空'){
-          showToast("輸入文字不符，已取消清空");
+        if(!confirm('⚠️ 確定要清空所有人已經輸入的盤點數字嗎？\n\n這個動作無法復原。')){
           return;
         }
         await clearAllCountsRemote();
