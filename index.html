@@ -195,8 +195,11 @@
   .num-box input{
     width:100%; border:none; background:transparent;
     font-size:38px; font-weight:800; color:var(--ink);
-    padding:4px 0 0; font-family:inherit;
+    padding:8px 0 6px; font-family:inherit;
     -moz-appearance:textfield;
+    min-height:56px; line-height:1.4;
+    overflow-x:auto; /* 啟用水平捲軸 */
+    white-space:nowrap; /* 強制單行，不自動換行 */
   }
   .num-box input::-webkit-outer-spin-button,
   .num-box input::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
