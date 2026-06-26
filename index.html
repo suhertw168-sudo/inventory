@@ -202,6 +202,21 @@
   .num-box input::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
   .num-box input:focus{ outline:none; }
   .num-box.focused{ border-color:var(--accent); background:#fff; }
+  .expr-row{
+    display:flex; align-items:center; gap:8px; margin-top:6px;
+  }
+  .plus-btn{
+    width:28px; height:28px; border-radius:8px;
+    border:1.5px solid var(--line); background:#fff;
+    color:var(--accent-deep); font-size:17px; font-weight:800;
+    line-height:1; cursor:pointer; flex:0 0 auto;
+    display:flex; align-items:center; justify-content:center;
+    padding:0;
+  }
+  .plus-btn:active{ background:var(--accent); color:#fff; border-color:var(--accent); }
+  .expr-hint{
+    font-size:12px; color:var(--muted); font-weight:600;
+  }
   .sum-row{
     display:flex; align-items:center; justify-content:space-between;
     background:#f1ece1; border-radius:12px;
@@ -631,11 +646,19 @@ function renderCounting(){
       '<div class="input-grid">'+
         '<div class="num-box" id="shelf-box">'+
           '<label>架上</label>'+
-          '<input type="number" inputmode="numeric" pattern="[0-9]*" id="shelf-input" value="'+shelfVal+'" placeholder="0">'+
+          '<input type="text" inputmode="decimal" id="shelf-input" value="'+shelfVal+'" placeholder="0">'+
+          '<div class="expr-row">'+
+            '<button class="plus-btn" data-action="insert-plus" data-target="shelf-input" type="button">+</button>'+
+            '<span class="expr-hint" id="shelf-hint"></span>'+
+          '</div>'+
         '</div>'+
         '<div class="num-box" id="stock-box">'+
           '<label>庫存</label>'+
-          '<input type="number" inputmode="numeric" pattern="[0-9]*" id="stock-input" value="'+stockVal+'" placeholder="0">'+
+          '<input type="text" inputmode="decimal" id="stock-input" value="'+stockVal+'" placeholder="0">'+
+          '<div class="expr-row">'+
+            '<button class="plus-btn" data-action="insert-plus" data-target="stock-input" type="button">+</button>'+
+            '<span class="expr-hint" id="stock-hint"></span>'+
+          '</div>'+
         '</div>'+
       '</div>'+
       '<div class="sum-row"><span class="sum-label">加總</span><span class="sum-val" id="sum-val">'+total+'</span></div>'+
@@ -803,6 +826,23 @@ function bindEvents(){
         render();
       }
 
+      else if(action === 'insert-plus'){
+        var targetId = el.getAttribute('data-target');
+        var input = document.getElementById(targetId);
+        if(input){
+          var pos = input.selectionStart != null ? input.selectionStart : input.value.length;
+          var before = input.value.slice(0, pos);
+          var after = input.value.slice(pos);
+          // 避免開頭就是+，也避免連續兩個+
+          var insert = (before === "" || before.slice(-1) === "+") ? "" : "+";
+          input.value = before + insert + after;
+          var newPos = pos + insert.length;
+          input.focus();
+          input.setSelectionRange(newPos, newPos);
+          input.dispatchEvent(new Event('input'));
+        }
+      }
+
       else if(action === 'next-slot'){
         await persistCurrentInputs();
         advanceSlot(1);
@@ -949,8 +989,11 @@ function bindEvents(){
   var stockInput = document.getElementById('stock-input');
   if(shelfInput && stockInput){
     function updateSum(){
-      var t = (Number(shelfInput.value)||0) + (Number(stockInput.value)||0);
-      document.getElementById('sum-val').textContent = t;
+      var shelfSum = parseExpr(shelfInput.value);
+      var stockSum = parseExpr(stockInput.value);
+      document.getElementById('sum-val').textContent = shelfSum + stockSum;
+      updateExprHint('shelf-input', 'shelf-hint');
+      updateExprHint('stock-input', 'stock-hint');
     }
     shelfInput.addEventListener('input', updateSum);
     stockInput.addEventListener('input', updateSum);
@@ -958,6 +1001,34 @@ function bindEvents(){
     shelfInput.addEventListener('blur', function(){ document.getElementById('shelf-box').classList.remove('focused'); persistCurrentInputs(); });
     stockInput.addEventListener('focus', function(){ document.getElementById('stock-box').classList.add('focused'); });
     stockInput.addEventListener('blur', function(){ document.getElementById('stock-box').classList.remove('focused'); persistCurrentInputs(); });
+    updateExprHint('shelf-input', 'shelf-hint');
+    updateExprHint('stock-input', 'stock-hint');
+  }
+}
+
+// 把像 "65+65+96" 這種算式換算成總和；單純數字就直接回傳那個數字
+function parseExpr(str){
+  if(str === null || str === undefined) return 0;
+  var s = String(str).trim();
+  if(s === "") return 0;
+  var parts = s.split("+");
+  var sum = 0;
+  for(var i=0;i<parts.length;i++){
+    var n = parseFloat(parts[i].trim());
+    if(!isNaN(n)) sum += n;
+  }
+  return sum;
+}
+
+// 如果輸入框裡有「+」，在下面顯示「= 總和」當提示，方便確認算對了
+function updateExprHint(inputId, hintId){
+  var input = document.getElementById(inputId);
+  var hint = document.getElementById(hintId);
+  if(!input || !hint) return;
+  if(input.value.indexOf("+") !== -1){
+    hint.textContent = "= " + parseExpr(input.value);
+  } else {
+    hint.textContent = "";
   }
 }
 
@@ -966,9 +1037,11 @@ async function persistCurrentInputs(){
   var shelfInput = document.getElementById('shelf-input');
   var stockInput = document.getElementById('stock-input');
   if(!shelfInput || !stockInput) return;
-  var shelf = shelfInput.value;
-  var stock = stockInput.value;
-  if(shelf === "" && stock === "") return; // nothing entered, don't mark as done
+  var shelfRaw = shelfInput.value;
+  var stockRaw = stockInput.value;
+  if(shelfRaw === "" && stockRaw === "") return; // nothing entered, don't mark as done
+  var shelf = shelfRaw === "" ? "" : parseExpr(shelfRaw);
+  var stock = stockRaw === "" ? "" : parseExpr(stockRaw);
   var st = state.structure[state.curStyleIdx];
   var col = st.colors[state.curColorIdx];
   var size = col.sizes[state.curSizeIdx];
