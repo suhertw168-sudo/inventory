@@ -1381,11 +1381,15 @@ function bindEvents(){
 
       else if(action === 'delete-style'){
         var idx = Number(el.getAttribute('data-style-idx'));
-        if(confirm('確定刪除「'+state.structure[idx].style+'」？這不會刪除已輸入的盤點數字，但畫面上會看不到。')){
-          state.structure.splice(idx,1);
-          await saveStructure(state.structure);
-          render();
+        var styleName = state.structure[idx].style;
+        var colorCount = state.structure[idx].colors.length;
+        if(!confirm('⚠️ 確定要刪除「'+styleName+'」嗎？\n\n這個款式有 '+colorCount+' 個顏色，刪除後畫面上會看不到（已輸入過的盤點數字會保留在後端）。')){
+          return;
         }
+        state.structure.splice(idx,1);
+        await saveStructure(state.structure);
+        showToast("已刪除「"+styleName+"」");
+        render();
       }
 
       else if(action === 'rename-style'){
@@ -1440,12 +1444,21 @@ function bindEvents(){
       }
 
       else if(action === 'clear-counts'){
-        if(confirm('確定要清空所有人已輸入的盤點數字嗎？此動作無法復原。')){
-          await clearAllCountsRemote();
-          state.counts = {};
-          showToast("已清空");
-          render();
+        // 第一層：確認意圖
+        if(!confirm('⚠️ 警告：這個動作會清空所有人已經輸入的盤點數字，且無法復原。\n\n確定要繼續嗎？')){
+          return;
         }
+        // 第二層：要求輸入指定文字才能執行（防止連點誤觸）
+        var typed = prompt('為了避免誤觸，請輸入「確認清空」四個字，才會真正執行清空。');
+        if(typed === null) return; // 使用者按取消
+        if(typed.trim() !== '確認清空'){
+          showToast("輸入文字不符，已取消清空");
+          return;
+        }
+        await clearAllCountsRemote();
+        state.counts = {};
+        showToast("已清空所有盤點數字");
+        render();
       }
 
       else if(action === 'download-xlsx'){
