@@ -1196,15 +1196,35 @@ function bindEvents(){
       updateExprHint('shelf-input', 'shelf-hint');
       updateExprHint('stock-input', 'stock-hint');
     }
-    shelfInput.addEventListener('input', updateSum);
-    stockInput.addEventListener('input', updateSum);
+    function handleInput(input){
+      updateSum();
+      autoSizeInput(input);
+    }
+    shelfInput.addEventListener('input', function(){ handleInput(shelfInput); });
+    stockInput.addEventListener('input', function(){ handleInput(stockInput); });
     shelfInput.addEventListener('focus', function(){ document.getElementById('shelf-box').classList.add('focused'); });
     shelfInput.addEventListener('blur', function(){ document.getElementById('shelf-box').classList.remove('focused'); persistCurrentInputs(); });
     stockInput.addEventListener('focus', function(){ document.getElementById('stock-box').classList.add('focused'); });
     stockInput.addEventListener('blur', function(){ document.getElementById('stock-box').classList.remove('focused'); persistCurrentInputs(); });
     updateExprHint('shelf-input', 'shelf-hint');
     updateExprHint('stock-input', 'stock-hint');
+    autoSizeInput(shelfInput);
+    autoSizeInput(stockInput);
   }
+}
+
+// 算式越長，字體自動縮小，確保整段算式都能看到、點得到（方便點到中間改數字）
+function autoSizeInput(input){
+  var len = input.value.length;
+  var size;
+  if(len <= 4) size = 38;
+  else if(len <= 6) size = 32;
+  else if(len <= 8) size = 27;
+  else if(len <= 10) size = 23;
+  else if(len <= 13) size = 19;
+  else if(len <= 16) size = 16;
+  else size = 14;
+  input.style.fontSize = size + "px";
 }
 
 // 把像 "65+65+96" 或 "12×6+8" 這種算式換算成總和，× 的運算優先於 +（例如 12×6+8 = 80）
