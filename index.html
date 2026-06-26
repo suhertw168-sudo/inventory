@@ -214,6 +214,38 @@
     padding:0;
   }
   .plus-btn:active{ background:var(--accent); color:#fff; border-color:var(--accent); }
+  .warn-btn{
+    color:var(--accent-deep) !important;
+    border:1.5px solid #e0b8a8 !important;
+    background:#fdf3ef !important;
+    font-weight:700 !important;
+  }
+  .warning-banner{
+    background:#fdecea;
+    border:1.5px solid #e3a89a;
+    border-radius:14px;
+    padding:16px 18px;
+    color:#7a2e1e;
+  }
+  .warning-banner strong{
+    display:block;
+    font-size:15px;
+    margin-bottom:6px;
+  }
+  .warning-banner p{
+    margin:0;
+    font-size:13.5px;
+    line-height:1.6;
+  }
+  .times-btn{
+    width:28px; height:28px; border-radius:8px;
+    border:1.5px solid #b9cce0; background:#eef4fa;
+    color:#2f5d8a; font-size:17px; font-weight:800;
+    line-height:1; cursor:pointer; flex:0 0 auto;
+    display:flex; align-items:center; justify-content:center;
+    padding:0;
+  }
+  .times-btn:active{ background:#2f5d8a; color:#fff; border-color:#2f5d8a; }
   .expr-hint{
     font-size:12px; color:var(--muted); font-weight:600;
   }
@@ -384,12 +416,17 @@ async function loadAllCounts(structure){
   }catch(e){ console.error("loadAllCounts failed", e); showToast("讀取盤點資料失敗，請檢查網路"); }
   return {};
 }
-async function saveCount(style, color, size, shelf, stock){
+async function saveCount(style, color, size, shelfRaw, stockRaw){
   var key = keyFor(style, color, size);
-  var val = {shelf: shelf, stock: stock, total: (Number(shelf)||0)+(Number(stock)||0)};
+  var shelfNum = parseExpr(shelfRaw);
+  var stockNum = parseExpr(stockRaw);
+  var val = {
+    shelf: shelfNum, stock: stockNum, total: shelfNum + stockNum,
+    shelfExpr: shelfRaw, stockExpr: stockRaw // 原始算式文字，僅保留在本次開啟工具的記憶體中
+  };
   state.counts[key] = val; // optimistic local update so UI feels instant
   try{
-    await apiPost({ action:"saveCount", style:style, color:color, size:size, shelf:shelf, stock:stock });
+    await apiPost({ action:"saveCount", style:style, color:color, size:size, shelf:shelfNum, stock:stockNum });
   }catch(e){ console.error("save count failed", e); showToast("儲存失敗，請檢查網路"); }
 }
 async function clearAllCountsRemote(){
@@ -559,7 +596,7 @@ function renderHome(){
   '<div class="topbar">'+
     '<div class="topbar-row">'+
       '<div class="brand">盤點工具</div>'+
-      '<button class="icon-btn" data-action="goto-setup">編輯結構</button>'+
+      '<button class="icon-btn warn-btn" data-action="goto-setup">🔒 管理用設定</button>'+
     '</div>'+
     '<div class="progress-wrap">'+
       '<div class="progress-bar"><div class="progress-fill" style="width:'+pct+'%"></div></div>'+
@@ -570,7 +607,7 @@ function renderHome(){
     '<div class="panel">'+
       '<h2>選擇品牌</h2>'+
       '<p class="sub">點品牌進入選型號，再逐色逐尺寸填寫，資料即時同步，多人可同時進行不同款式或顏色。</p>'+
-      (rows || emptyStateHtml('還沒有設定款式', '先到「編輯結構」加入款式、顏色與尺寸'))+
+      (rows || emptyStateHtml('還沒有設定款式', '請管理人員到「管理用設定」加入款式、顏色與尺寸'))+
     '</div>'+
     '<button class="btn secondary" data-action="goto-summary">查看彙總 / 匯出貼回 Sheet</button>'+
   '</main>'+
@@ -610,7 +647,7 @@ function renderBrandModels(){
   '<main>'+
     '<div class="panel">'+
       '<h2>選擇型號</h2>'+
-      (rows || emptyStateHtml('這個品牌底下還沒有型號', '到「編輯結構」加入'))+
+      (rows || emptyStateHtml('這個品牌底下還沒有型號', '請管理人員到「管理用設定」加入'))+
     '</div>'+
   '</main>';
 }
@@ -632,10 +669,14 @@ function renderSetup(){
   return ''+
   '<div class="topbar"><div class="topbar-row">'+
     '<button class="icon-btn" data-action="goto-home">‹ 返回</button>'+
-    '<div class="brand">編輯結構</div>'+
+    '<div class="brand">⚠️ 管理用設定</div>'+
     '<span style="width:60px"></span>'+
   '</div></div>'+
   '<main>'+
+    '<div class="warning-banner">'+
+      '<strong>請勿觸碰，僅限管理人員操作</strong>'+
+      '<p>這裡的設定會影響所有人正在使用的盤點資料。一般盤點人員不需要進到這個畫面，如果你不是負責設定的人，請按上方「‹ 返回」離開，避免不小心改動或刪除大家已經填好的數字。</p>'+
+    '</div>'+
     '<div class="panel">'+
       '<h2>目前的款式</h2>'+
       '<p class="sub">每個款式可以有多個顏色，每個顏色有自己的尺寸清單。</p>'+
@@ -716,9 +757,10 @@ function renderCounting(){
     return '<button class="'+cls+'" data-action="jump-color" data-color-idx="'+i+'">'+escapeHtml(c.name)+'</button>';
   }).join("");
 
-  var shelfVal = existing.shelf !== undefined ? existing.shelf : "";
-  var stockVal = existing.stock !== undefined ? existing.stock : "";
-  var total = (Number(shelfVal)||0) + (Number(stockVal)||0);
+  // 優先顯示原始算式文字（同一次開啟工具期間都會保留），沒有的話才顯示已存的數字
+  var shelfVal = existing.shelfExpr !== undefined ? existing.shelfExpr : (existing.shelf !== undefined ? existing.shelf : "");
+  var stockVal = existing.stockExpr !== undefined ? existing.stockExpr : (existing.stock !== undefined ? existing.stock : "");
+  var total = (existing.total !== undefined ? existing.total : (parseExpr(shelfVal) + parseExpr(stockVal)));
 
   var isFirst = state.curStyleIdx === 0 && state.curColorIdx === 0 && state.curSizeIdx === 0;
   var isLast = isLastSlot();
@@ -749,7 +791,8 @@ function renderCounting(){
           '<label>架上</label>'+
           '<input type="text" inputmode="decimal" id="shelf-input" value="'+shelfVal+'" placeholder="0">'+
           '<div class="expr-row">'+
-            '<button class="plus-btn" data-action="insert-plus" data-target="shelf-input" type="button">+</button>'+
+            '<button class="plus-btn" data-action="insert-symbol" data-target="shelf-input" data-symbol="+" type="button">+</button>'+
+            '<button class="times-btn" data-action="insert-symbol" data-target="shelf-input" data-symbol="×" type="button">×</button>'+
             '<span class="expr-hint" id="shelf-hint"></span>'+
           '</div>'+
         '</div>'+
@@ -757,7 +800,8 @@ function renderCounting(){
           '<label>庫存</label>'+
           '<input type="text" inputmode="decimal" id="stock-input" value="'+stockVal+'" placeholder="0">'+
           '<div class="expr-row">'+
-            '<button class="plus-btn" data-action="insert-plus" data-target="stock-input" type="button">+</button>'+
+            '<button class="plus-btn" data-action="insert-symbol" data-target="stock-input" data-symbol="+" type="button">+</button>'+
+            '<button class="times-btn" data-action="insert-symbol" data-target="stock-input" data-symbol="×" type="button">×</button>'+
             '<span class="expr-hint" id="stock-hint"></span>'+
           '</div>'+
         '</div>'+
@@ -944,15 +988,17 @@ function bindEvents(){
         render();
       }
 
-      else if(action === 'insert-plus'){
+      else if(action === 'insert-symbol'){
         var targetId = el.getAttribute('data-target');
+        var symbol = el.getAttribute('data-symbol');
         var input = document.getElementById(targetId);
         if(input){
           var pos = input.selectionStart != null ? input.selectionStart : input.value.length;
           var before = input.value.slice(0, pos);
           var after = input.value.slice(pos);
-          // 避免開頭就是+，也避免連續兩個+
-          var insert = (before === "" || before.slice(-1) === "+") ? "" : "+";
+          var lastChar = before.slice(-1);
+          // 避免開頭就是運算符，也避免連續兩個運算符（+ 或 ×）
+          var insert = (before === "" || lastChar === "+" || lastChar === "×") ? "" : symbol;
           input.value = before + insert + after;
           var newPos = pos + insert.length;
           input.focus();
@@ -1161,26 +1207,32 @@ function bindEvents(){
   }
 }
 
-// 把像 "65+65+96" 這種算式換算成總和；單純數字就直接回傳那個數字
+// 把像 "65+65+96" 或 "12×6+8" 這種算式換算成總和，× 的運算優先於 +（例如 12×6+8 = 80）
 function parseExpr(str){
   if(str === null || str === undefined) return 0;
-  var s = String(str).trim();
+  var s = String(str).trim().replace(/[xX]/g, "×"); // 容許用英文字母 x 代替 ×
   if(s === "") return 0;
-  var parts = s.split("+");
+  var terms = s.split("+");
   var sum = 0;
-  for(var i=0;i<parts.length;i++){
-    var n = parseFloat(parts[i].trim());
-    if(!isNaN(n)) sum += n;
+  for(var i=0;i<terms.length;i++){
+    var factors = terms[i].split("×");
+    var product = null;
+    for(var j=0;j<factors.length;j++){
+      var n = parseFloat(factors[j].trim());
+      if(isNaN(n)) continue;
+      product = (product === null) ? n : product * n;
+    }
+    if(product !== null) sum += product;
   }
   return sum;
 }
 
-// 如果輸入框裡有「+」，在下面顯示「= 總和」當提示，方便確認算對了
+// 如果輸入框裡有「+」或「×」，在下面顯示「= 總和」當提示，方便確認算對了
 function updateExprHint(inputId, hintId){
   var input = document.getElementById(inputId);
   var hint = document.getElementById(hintId);
   if(!input || !hint) return;
-  if(input.value.indexOf("+") !== -1){
+  if(input.value.indexOf("+") !== -1 || input.value.indexOf("×") !== -1 || /[xX]/.test(input.value)){
     hint.textContent = "= " + parseExpr(input.value);
   } else {
     hint.textContent = "";
@@ -1195,12 +1247,10 @@ async function persistCurrentInputs(){
   var shelfRaw = shelfInput.value;
   var stockRaw = stockInput.value;
   if(shelfRaw === "" && stockRaw === "") return; // nothing entered, don't mark as done
-  var shelf = shelfRaw === "" ? "" : parseExpr(shelfRaw);
-  var stock = stockRaw === "" ? "" : parseExpr(stockRaw);
   var st = state.structure[state.curStyleIdx];
   var col = st.colors[state.curColorIdx];
   var size = col.sizes[state.curSizeIdx];
-  await saveCount(st.style, col.name, size, shelf, stock);
+  await saveCount(st.style, col.name, size, shelfRaw, stockRaw);
 }
 
 function advanceSlot(dir){
