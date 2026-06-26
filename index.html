@@ -1248,9 +1248,9 @@ function bindEvents(){
       }
 
       else if(action === 'jump-color'){
+        await persistCurrentInputs(); // 先存目前這格的資料
         state.curColorIdx = Number(el.getAttribute('data-color-idx'));
         state.curSizeIdx = 0;
-        await persistCurrentInputs();
         render();
       }
       else if(action === 'jump-size'){
