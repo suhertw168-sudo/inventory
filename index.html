@@ -187,36 +187,14 @@
     border-radius:14px;
     padding:14px 12px 12px;
     background:#fcfbf8;
+    min-width:0; /* 關鍵：避免 grid item 被內容撐到超出欄寬 */
+    overflow:hidden;
   }
   .num-box label{
     font-size:12.5px; color:var(--muted); font-weight:700;
     text-transform:uppercase; letter-spacing:.04em;
   }
-  .num-box input{
-    width:100%; border:none; background:transparent;
-    font-size:38px; font-weight:800; color:var(--ink);
-    padding:8px 0 6px; font-family:inherit;
-    -moz-appearance:textfield;
-    min-height:56px; line-height:1.4;
-    overflow-x:auto; /* 啟用水平捲軸 */
-    white-space:nowrap; /* 強制單行，不自動換行 */
-  }
-  .num-box input::-webkit-outer-spin-button,
-  .num-box input::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
-  .num-box input:focus{ outline:none; }
   .num-box.focused{ border-color:var(--accent); background:#fff; }
-  .expr-row{
-    display:flex; align-items:center; gap:8px; margin-top:6px;
-  }
-  .plus-btn{
-    width:28px; height:28px; border-radius:8px;
-    border:1.5px solid var(--line); background:#fff;
-    color:var(--accent-deep); font-size:17px; font-weight:800;
-    line-height:1; cursor:pointer; flex:0 0 auto;
-    display:flex; align-items:center; justify-content:center;
-    padding:0;
-  }
-  .plus-btn:active{ background:var(--accent); color:#fff; border-color:var(--accent); }
   .warn-btn{
     color:var(--accent-deep) !important;
     border:1.5px solid #e0b8a8 !important;
@@ -240,33 +218,27 @@
     font-size:13.5px;
     line-height:1.6;
   }
-  .times-btn{
-    width:28px; height:28px; border-radius:8px;
-    border:1.5px solid #b9cce0; background:#eef4fa;
-    color:#2f5d8a; font-size:17px; font-weight:800;
-    line-height:1; cursor:pointer; flex:0 0 auto;
-    display:flex; align-items:center; justify-content:center;
-    padding:0;
-  }
-  .times-btn:active{ background:#2f5d8a; color:#fff; border-color:#2f5d8a; }
-  .expr-hint{
-    font-size:12px; color:var(--muted); font-weight:600;
-  }
   /* 標籤式算式編輯器 */
   .expr-chips{
-    display:flex; flex-wrap:wrap; gap:6px; align-items:center;
+    display:flex; flex-wrap:wrap; gap:5px; align-items:center;
     min-height:48px; margin-top:6px;
+    max-width:100%;
+  }
+  .expr-chiplist{
+    display:contents; /* 讓裡面的標籤直接參與 flex 佈局 */
   }
   .expr-chip-num{
     background:#fdf3ef; color:var(--accent-deep);
-    padding:9px 14px; border-radius:8px;
-    font-size:22px; font-weight:800; font-family:inherit;
+    padding:7px 10px; border-radius:7px;
+    font-size:18px; font-weight:800; font-family:inherit;
     border:1.5px solid #f0d8cd; cursor:pointer; line-height:1;
+    flex:0 0 auto;
   }
   .expr-chip-num:active{ background:#f7e3d8; }
   .expr-chip-op{
-    padding:9px 12px; border-radius:8px;
-    font-size:19px; font-weight:800; line-height:1; cursor:pointer;
+    padding:7px 9px; border-radius:7px;
+    font-size:16px; font-weight:800; line-height:1; cursor:pointer;
+    flex:0 0 auto;
   }
   .expr-chip-op.op-plus{
     background:#fdf3ef; color:var(--accent-deep); border:1.5px solid #f0d8cd;
@@ -276,15 +248,15 @@
   }
   .expr-chip-op:active{ filter:brightness(0.94); }
   .expr-newinput{
-    width:64px; font-size:22px; font-weight:800; text-align:center;
-    border:1.5px dashed var(--line); border-radius:8px;
-    padding:8px 4px; font-family:inherit; color:var(--ink);
-    background:#fff;
+    width:54px; font-size:18px; font-weight:800; text-align:center;
+    border:1.5px dashed var(--line); border-radius:7px;
+    padding:6px 4px; font-family:inherit; color:var(--ink);
+    background:#fff; flex:0 0 auto;
   }
   .expr-newinput:focus{ outline:none; border-color:var(--accent); border-style:solid; }
-  .expr-addbtns{ display:flex; gap:6px; margin-left:2px; }
+  .expr-addbtns{ display:flex; gap:5px; margin-left:2px; flex:0 0 auto; }
   .expr-addbtn{
-    width:32px; height:38px; border-radius:8px; font-size:18px; font-weight:800;
+    width:30px; height:34px; border-radius:7px; font-size:16px; font-weight:800;
     line-height:1; cursor:pointer; flex:0 0 auto;
     display:flex; align-items:center; justify-content:center; padding:0;
   }
@@ -348,6 +320,45 @@
   }
   table.summary th{ color:var(--muted); font-weight:700; font-size:12px; }
   table.summary td.num{ text-align:right; font-weight:600; }
+  /* 彙總頁面：品牌分組摺疊 */
+  .brand-group{
+    border:1px solid var(--line); border-radius:10px;
+    margin-bottom:10px; overflow:hidden;
+    background:#fcfbf8;
+  }
+  .brand-group.has-missing{
+    border-left:4px solid #e87a3e;
+  }
+  .brand-group-header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 16px; cursor:pointer;
+    background:#fcfbf8; user-select:none;
+  }
+  .brand-group-header:active{ background:#f5efe3; }
+  .brand-group-header .bg-left{
+    display:flex; align-items:center; gap:10px;
+  }
+  .brand-group-header .bg-name{
+    font-size:16px; font-weight:800; color:var(--ink);
+  }
+  .brand-group-header .bg-meta{
+    font-size:12px; color:var(--muted); font-weight:600;
+  }
+  .brand-group-header .bg-totals{
+    font-size:13px; font-weight:700; color:var(--accent-deep);
+  }
+  .brand-group-header .bg-arrow{
+    margin-left:8px; color:var(--muted); font-size:14px;
+    transition:transform 0.18s ease;
+  }
+  .brand-group.expanded .bg-arrow{ transform:rotate(90deg); }
+  .brand-group-body{
+    display:none;
+    padding:0 12px 12px;
+    background:#fff;
+    border-top:1px solid var(--line);
+  }
+  .brand-group.expanded .brand-group-body{ display:block; }
   .empty-state{
     text-align:center; padding:40px 16px; color:var(--muted);
   }
@@ -377,24 +388,8 @@
 <script>
 (function(){
 
-// ---------- Default seed data (from KY T-24 example) ----------
+// ---------- Default seed data ----------
 var DEFAULT_SIZES_A = ["#6(JS)","#8(JM)","#10(JL)","JXL","XS","S","M","L","XL","2XL","3XL","4XL","5XL","6XL"];
-var DEFAULT_STRUCTURE = [
-  {
-    style: "KY T-24",
-    colors: [
-      {name:"白", sizes: DEFAULT_SIZES_A.slice()},
-      {name:"黑", sizes: DEFAULT_SIZES_A.slice()},
-      {name:"軍綠色", sizes: DEFAULT_SIZES_A.slice()},
-      {name:"克萊茵藍", sizes: DEFAULT_SIZES_A.slice()},
-      {name:"果綠", sizes: DEFAULT_SIZES_A.slice()},
-      {name:"沙棕色", sizes: DEFAULT_SIZES_A.slice()},
-      {name:"藏青色", sizes: DEFAULT_SIZES_A.slice(0,12)},
-      {name:"玫紅色", sizes: DEFAULT_SIZES_A.slice(0,11)},
-      {name:"紫", sizes: DEFAULT_SIZES_A.slice(0,11)}
-    ]
-  }
-];
 
 var APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwmO5IsfDIufHan6YCyML-TLBDV4XIiIOmbEuZn6W_TJza6zba5W6s5ht2WUsPnY7XU/exec";
 
@@ -544,24 +539,46 @@ function sortStructureByStyle(structure){
 async function init(){
   var structure = null;
   var counts = {};
+  var fetchFailed = false;
   try{
     var all = await apiGet("all");
-    if(all && all.structure && all.structure.length){
-      structure = all.structure;
+    if(all && Array.isArray(all.structure)){
+      structure = all.structure; // 即使是空陣列也算合法（代表這個 Sheet 還沒設定任何款式）
       counts = all.counts || {};
+    } else {
+      fetchFailed = true;
     }
   }catch(e){
     console.error("init load failed", e);
-    showToast("讀取資料失敗，請檢查網路");
+    fetchFailed = true;
   }
-  if(!structure){
-    structure = DEFAULT_STRUCTURE;
-    await saveStructure(structure);
+
+  if(fetchFailed || structure === null){
+    renderLoadError();
+    return;
   }
+
   state.structure = sortStructureByStyle(structure);
   state.counts = counts;
   state.view = "home";
   render();
+}
+
+// 讀取失敗時顯示這個畫面，絕對不會自動清空或覆蓋任何已存在 Google Sheet 裡的款式設定
+function renderLoadError(){
+  var app = document.getElementById("app");
+  app.innerHTML =
+    '<main style="padding-top:60px; text-align:center;">'+
+      '<div style="font-size:40px; margin-bottom:12px;">📡</div>'+
+      '<h2 style="margin-bottom:8px; font-size:18px;">讀取資料失敗</h2>'+
+      '<p style="color:var(--muted); font-size:14px; margin-bottom:20px; line-height:1.7; padding:0 24px;">'+
+        '可能是網路不穩，或暫時連不上 Google。請檢查網路後再試一次。<br><br>'+
+        '<strong>為了保護資料安全，這裡絕對不會自動清空或覆蓋任何已經存在的款式設定。</strong>'+
+      '</p>'+
+      '<button class="btn" id="retry-init-btn" style="margin:0 24px;">重新整理</button>'+
+    '</main>';
+  var btn = document.getElementById('retry-init-btn');
+  if(btn){ btn.addEventListener('click', function(){ init(); }); }
 }
 
 // ---------- Progress helpers ----------
@@ -746,9 +763,14 @@ function renderSetup(){
       (rows || emptyStateHtml('尚無款式',''))+
     '</div>'+
     '<div class="panel">'+
-      '<h2>批次匯入（可分段貼上）</h2>'+
-      '<p class="sub">貼上一段 JSON 結構資料，按匯入後會把這幾個款式加進現有清單（同名款式會覆蓋更新，其他款式不受影響）。資料太長可以分成幾段、一段一段貼，不用一次貼完整段。</p>'+
+      '<h2>批次匯入（可分段貼上，或直接選檔案）</h2>'+
+      '<p class="sub">可以直接選一個 .json 檔案上傳，或貼上 JSON 文字。按匯入後會把這幾個款式加進現有清單（同名款式會覆蓋更新，其他款式不受影響）。</p>'+
       '<div class="field">'+
+        '<label>選擇檔案上傳</label>'+
+        '<input type="file" id="bulk-import-file" accept=".json,application/json">'+
+      '</div>'+
+      '<div class="field">'+
+        '<label>或貼上 JSON 文字</label>'+
         '<textarea id="bulk-import-data" rows="6" placeholder="貼上 JSON 結構資料（可以只貼一部分款式）..."></textarea>'+
       '</div>'+
       '<button class="btn" data-action="bulk-import">匯入這一段（加入現有款式）</button>'+
@@ -824,9 +846,24 @@ function tokensToStr(tokens){
 
 // 產生「標籤式算式編輯器」的 HTML。field 為 "shelf" 或 "stock"
 function renderExprEditor(field){
+  var html = '<div class="expr-chips" id="'+field+'-chips">';
+  html += renderTokenChips(field); // 前面的數字/運算符標籤（這塊會被就地更新）
+  // 固定不動的新增區：輸入框 + 加號/乘號按鈕（DOM 不重建，鍵盤不收起）
+  html += '<input class="expr-newinput" id="'+field+'-newinput" type="text" inputmode="decimal" placeholder="0">';
+  html += '<div class="expr-addbtns">'+
+    '<button class="expr-addbtn add-plus" data-action="add-token" data-field="'+field+'" data-op="+" type="button">+</button>'+
+    '<button class="expr-addbtn add-times" data-action="add-token" data-field="'+field+'" data-op="×" type="button">×</button>'+
+  '</div>';
+  html += '</div>';
+  html += '<div id="'+field+'-editor"></div>'; // 點標籤後的編輯彈窗會放這裡
+  return html;
+}
+
+// 只產生前面那串數字/運算符標籤（不含輸入框），供就地更新用
+function renderTokenChips(field){
   var exprStr = field === 'shelf' ? state.exprShelf : state.exprStock;
   var tokens = tokenizeExpr(exprStr);
-  var html = '<div class="expr-chips" id="'+field+'-chips">';
+  var html = '<span id="'+field+'-chiplist" class="expr-chiplist">';
   tokens.forEach(function(tk, idx){
     if(tk.t === 'num'){
       html += '<span class="expr-chip-num" data-action="edit-token" data-field="'+field+'" data-idx="'+idx+'">'+escapeHtml(tk.v)+'</span>';
@@ -835,14 +872,7 @@ function renderExprEditor(field){
       html += '<span class="expr-chip-op '+opcls+'" data-action="edit-token" data-field="'+field+'" data-idx="'+idx+'">'+escapeHtml(tk.v)+'</span>';
     }
   });
-  // 最後面的新增區：輸入框 + 加號/乘號按鈕
-  html += '<input class="expr-newinput" id="'+field+'-newinput" type="text" inputmode="decimal" placeholder="0">';
-  html += '<div class="expr-addbtns">'+
-    '<button class="expr-addbtn add-plus" data-action="add-token" data-field="'+field+'" data-op="+" type="button">+</button>'+
-    '<button class="expr-addbtn add-times" data-action="add-token" data-field="'+field+'" data-op="×" type="button">×</button>'+
-  '</div>';
-  html += '</div>';
-  html += '<div id="'+field+'-editor"></div>'; // 點標籤後的編輯彈窗會放這裡
+  html += '</span>';
   return html;
 }
 
@@ -933,23 +963,104 @@ function isLastSlot(){
 // ---------- SUMMARY ----------
 function renderSummary(){
   var structure = state.structure;
-  var rowsHtml = "";
   var tsvLines = ["款式\t顏色\t尺寸\t架上\t庫存\t加總"];
 
-  structure.forEach(function(st){
+  // 先把所有資料按品牌分組
+  function buildStyleTableHtml(st){
+    var html = '<div style="overflow-x:auto;">'+
+      '<table class="summary"><thead><tr><th>顏色</th><th>尺寸</th><th>架上</th><th>庫存</th><th>加總</th></tr></thead><tbody>';
+    var styleShelf=0, styleStock=0, styleTotal=0, missingCount=0;
     st.colors.forEach(function(col){
       col.sizes.forEach(function(sz){
         var key = keyFor(st.style, col.name, sz);
         var c = state.counts[key];
+        var isMissing = !c;
+        if(isMissing) missingCount++;
         var shelf = c ? c.shelf : "";
         var stock = c ? c.stock : "";
         var total = c ? c.total : "";
-        rowsHtml += '<tr><td>'+escapeHtml(st.style)+'</td><td>'+escapeHtml(col.name)+'</td><td>'+escapeHtml(sz)+'</td>'+
-          '<td class="num">'+(shelf===""?'—':shelf)+'</td><td class="num">'+(stock===""?'—':stock)+'</td><td class="num"><strong>'+(total===""?'—':total)+'</strong></td></tr>';
+        var rowStyle = isMissing ? ' style="background:#fff4e6;"' : '';
+        var missingTag = isMissing ? ' <span style="background:#e87a3e; color:#fff; font-size:10px; padding:2px 6px; border-radius:6px; font-weight:700; margin-left:4px;">未輸入</span>' : '';
+        html += '<tr'+rowStyle+'><td>'+escapeHtml(col.name)+missingTag+'</td><td>'+escapeHtml(sz)+'</td>'+
+          '<td class="num">'+(shelf===""?'—':shelf)+'</td>'+
+          '<td class="num">'+(stock===""?'—':stock)+'</td>'+
+          '<td class="num"><strong>'+(total===""?'—':total)+'</strong></td></tr>';
         tsvLines.push([st.style, col.name, sz, shelf, stock, total].join("\t"));
+        if(c){ styleShelf+=Number(c.shelf)||0; styleStock+=Number(c.stock)||0; styleTotal+=Number(c.total)||0; }
       });
     });
+    html += '<tr style="background:#faf7f1;"><td colspan="2"><strong>小計</strong></td>'+
+      '<td class="num"><strong>'+styleShelf+'</strong></td>'+
+      '<td class="num"><strong>'+styleStock+'</strong></td>'+
+      '<td class="num"><strong>'+styleTotal+'</strong></td></tr>';
+    html += '</tbody></table></div>';
+    return {html:html, total:styleTotal, missing:missingCount};
+  }
+
+  // 計算單一款式的總計（彙總用，不依賴上面那個函式）
+  function calcStyleTotal(st){
+    var t = 0;
+    st.colors.forEach(function(col){
+      col.sizes.forEach(function(sz){
+        var c = state.counts[keyFor(st.style, col.name, sz)];
+        if(c) t += Number(c.total)||0;
+      });
+    });
+    return t;
+  }
+
+  // 依 BRAND_GROUPS 順序組裝畫面
+  var groupsHtml = "";
+  var grandMissing = 0;
+  BRAND_GROUPS.forEach(function(g){
+    var groupStyles = g.styles
+      .map(function(name){ return structure.find(function(s){ return s.style === name; }); })
+      .filter(function(s){ return s; });
+    if(groupStyles.length === 0) return;
+
+    var groupName = g.brand === null ? groupStyles[0].style : g.brand;
+    var styleCount = groupStyles.length;
+    var groupTotal = 0;
+    var groupMissing = 0;
+    var bodyHtml = "";
+
+    groupStyles.forEach(function(st){
+      var built = buildStyleTableHtml(st);
+      groupTotal += built.total;
+      groupMissing += built.missing;
+      if(g.brand !== null){
+        // 品牌底下多個型號時，每個型號用小標題隔開（含該型號未輸入筆數提示）
+        var styleMissingTag = built.missing > 0 ? ' <span style="background:#e87a3e; color:#fff; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">未輸入 '+built.missing+'</span>' : '';
+        bodyHtml += '<div style="padding-top:12px; font-weight:800; color:var(--accent-deep); font-size:14px;">'+escapeHtml(st.style)+styleMissingTag+'</div>';
+      }
+      bodyHtml += built.html;
+    });
+
+    grandMissing += groupMissing;
+    var metaParts = [];
+    if(g.brand !== null) metaParts.push(styleCount + ' 個型號');
+    if(groupMissing > 0) metaParts.push('<span style="color:#e87a3e; font-weight:700;">未輸入 '+groupMissing+' 筆</span>');
+    var metaText = metaParts.join(' · ');
+    groupsHtml += '<div class="brand-group'+(groupMissing > 0 ? ' has-missing' : '')+'" data-brand-name="'+escapeHtml(groupName)+'">'+
+      '<div class="brand-group-header" data-action="toggle-brand-group">'+
+        '<div class="bg-left">'+
+          '<div>'+
+            '<div class="bg-name">'+escapeHtml(groupName)+'</div>'+
+            (metaText ? '<div class="bg-meta">'+metaText+'</div>' : '')+
+          '</div>'+
+        '</div>'+
+        '<div style="display:flex; align-items:center; gap:6px;">'+
+          '<div class="bg-totals">合計 '+groupTotal+'</div>'+
+          '<div class="bg-arrow">›</div>'+
+        '</div>'+
+      '</div>'+
+      '<div class="brand-group-body">'+bodyHtml+'</div>'+
+    '</div>';
   });
+
+  // 整體總計
+  var grandTotal = 0;
+  structure.forEach(function(st){ grandTotal += calcStyleTotal(st); });
 
   return ''+
   '<div class="topbar"><div class="topbar-row">'+
@@ -969,11 +1080,11 @@ function renderSummary(){
       '<button class="btn secondary" data-action="download-xlsx">下載 Excel（.xlsx）</button>'+
     '</div>'+
     '<div class="panel">'+
-      '<h2>明細</h2>'+
-      '<div style="overflow-x:auto;">'+
-        '<table class="summary"><thead><tr><th>款式</th><th>顏色</th><th>尺寸</th><th>架上</th><th>庫存</th><th>加總</th></tr></thead>'+
-        '<tbody>'+rowsHtml+'</tbody></table>'+
-      '</div>'+
+      '<h2>明細（依品牌分組）</h2>'+
+      '<p class="sub">點品牌標題展開或收合該品牌的明細。整體加總：<strong style="color:var(--accent-deep);">'+grandTotal+'</strong>'+
+        (grandMissing > 0 ? ' · <strong style="color:#e87a3e;">尚有 '+grandMissing+' 筆未輸入</strong>' : ' · <strong style="color:#2f7a3e;">已全部輸入完成 ✓</strong>')+
+      '</p>'+
+      groupsHtml+
     '</div>'+
   '</main>'+
   '<div id="tsv-data" style="display:none;">'+escapeHtml(tsvLines.join("\n"))+'</div>';
@@ -1290,6 +1401,13 @@ function bindEvents(){
         downloadWorkbook();
       }
 
+      else if(action === 'toggle-brand-group'){
+        var group = el.closest('.brand-group');
+        if(group){
+          group.classList.toggle('expanded');
+        }
+      }
+
       else if(action === 'regenerate-sheets'){
         el.disabled = true;
         el.textContent = "更新中…";
@@ -1318,21 +1436,73 @@ function bindEvents(){
         if(field){ ev.preventDefault(); commitNewInput(field); }
       }
     });
+
+    // 每打一個字就即時更新加總，連「還沒按+、還沒換格」的最後一個數字也算進去
+    app.addEventListener('input', function(ev){
+      var t = ev.target;
+      if(t && t.classList && t.classList.contains('expr-newinput')){
+        refreshSum();
+      }
+    });
+
+    // 安全網：輸入框失焦時（切到別的地方、收起鍵盤）自動把最後一個數字收進去並存檔
+    app.addEventListener('blur', function(ev){
+      var t = ev.target;
+      if(t && t.classList && t.classList.contains('expr-newinput')){
+        persistCurrentInputs();
+      }
+    }, true); // 用 capture，因為 blur 不會冒泡
+
+    // 批次匯入：選了檔案後自動讀取內容，填進文字框
+    app.addEventListener('change', function(ev){
+      var t = ev.target;
+      if(t && t.id === 'bulk-import-file' && t.files && t.files[0]){
+        var reader = new FileReader();
+        reader.onload = function(e){
+          document.getElementById('bulk-import-data').value = e.target.result;
+          showToast("已讀取檔案「"+t.files[0].name+"」，按下面的「匯入這一段」即可");
+        };
+        reader.onerror = function(){
+          showToast("讀取檔案失敗，請改用貼上文字的方式");
+        };
+        reader.readAsText(t.files[0], 'utf-8');
+      }
+    });
   }
 
   refreshSum();
 }
 
-// 重新計算並顯示加總（讀 state 的兩個算式）
+// 重新計算並顯示加總：已收進算式的部分 + 兩個欄位「還沒送出」的當前輸入內容
 function refreshSum(){
   var sumEl = document.getElementById('sum-val');
-  if(sumEl){
-    sumEl.textContent = parseExpr(state.exprShelf) + parseExpr(state.exprStock);
-  }
+  if(!sumEl) return;
+  var shelfPending = document.getElementById('shelf-newinput');
+  var stockPending = document.getElementById('stock-newinput');
+  var shelfTotal = parseExpr(state.exprShelf) + (shelfPending ? parseExpr(shelfPending.value) : 0);
+  var stockTotal = parseExpr(state.exprStock) + (stockPending ? parseExpr(stockPending.value) : 0);
+  sumEl.textContent = shelfTotal + stockTotal;
 }
 
 function getExpr(field){ return field === 'shelf' ? state.exprShelf : state.exprStock; }
 function setExpr(field, val){ if(field === 'shelf') state.exprShelf = val; else state.exprStock = val; }
+
+// 就地更新：只換前面的標籤串，輸入框 DOM 不動，清空內容並維持焦點（手機鍵盤不會收起）
+function updateChipsInPlace(field, keepFocus){
+  var list = document.getElementById(field+'-chiplist');
+  if(list){
+    list.outerHTML = renderTokenChips(field);
+  }
+  var inp = document.getElementById(field+'-newinput');
+  if(inp){
+    inp.value = "";
+    if(keepFocus){ inp.focus(); }
+  }
+  // 點標籤的編輯彈窗若開著，關掉
+  var editor = document.getElementById(field+'-editor');
+  if(editor) editor.innerHTML = "";
+  refreshSum();
+}
 
 // 把最後輸入框裡的數字，先收進算式（如果有打東西的話）
 function commitNewInput(field){
@@ -1351,7 +1521,7 @@ function commitNewInput(field){
     tokens.push({t:'num', v:v});
   }
   setExpr(field, tokensToStr(tokens));
-  rerenderField(field);
+  updateChipsInPlace(field, true);
 }
 
 // 按了 + 或 × 新增：先把輸入框內容收進去，再補上運算符，等待下一個數字
@@ -1374,7 +1544,7 @@ function addTokenToExpr(field, op){
   if(tokens.length === 0) return; // 還沒有任何數字，不能先放運算符
   tokens.push({t:'op', v:op});
   setExpr(field, tokensToStr(tokens));
-  rerenderField(field);
+  updateChipsInPlace(field, true);
 }
 
 // 點某個 token 打開編輯彈窗
@@ -1418,7 +1588,7 @@ function applyTokenNum(field, idx){
     tokens[idx].v = v;
     setExpr(field, tokensToStr(tokens));
   }
-  rerenderField(field);
+  updateChipsInPlace(field, false);
 }
 
 function applyTokenOp(field, idx, op){
@@ -1427,7 +1597,7 @@ function applyTokenOp(field, idx, op){
     tokens[idx].v = op;
     setExpr(field, tokensToStr(tokens));
   }
-  rerenderField(field);
+  updateChipsInPlace(field, false);
 }
 
 // 刪除 token：刪數字時連同它前面的運算符一起拿掉；刪運算符時連同後面的數字一起拿掉
@@ -1452,21 +1622,7 @@ function deleteToken(field, idx){
     }
   }
   setExpr(field, tokensToStr(tokens));
-  rerenderField(field);
-}
-
-// 只重畫某個欄位的標籤區（不整頁重繪，避免另一欄位的輸入中內容遺失）
-function rerenderField(field){
-  var box = document.getElementById(field+'-box');
-  if(!box) return;
-  var label = field === 'shelf' ? '架上' : '庫存';
-  box.innerHTML = '<label>'+label+'</label>' + renderExprEditor(field);
-  refreshSum();
-  // 重畫後自動聚焦新輸入框，方便連續輸入
-  setTimeout(function(){
-    var ni = document.getElementById(field+'-newinput');
-    if(ni) ni.focus();
-  }, 0);
+  updateChipsInPlace(field, false);
 }
 
 // 把像 "65+65+96" 或 "12×6+8" 這種算式換算成總和，× 的運算優先於 +（例如 12×6+8 = 80）
@@ -1496,10 +1652,14 @@ async function persistCurrentInputs(){
   commitNewInput('stock');
   var shelfRaw = state.exprShelf || "";
   var stockRaw = state.exprStock || "";
-  if(shelfRaw === "" && stockRaw === "") return; // nothing entered, don't mark as done
   var st = state.structure[state.curStyleIdx];
   var col = st.colors[state.curColorIdx];
   var size = col.sizes[state.curSizeIdx];
+  var key = keyFor(st.style, col.name, size);
+  var existing = state.counts[key];
+  // 兩格都空、而且之前也沒存過東西 → 略過（避免送出毫無意義的空白記錄）
+  // 但若之前有存過東西、現在被清空 → 必須送出，把後端的舊值蓋掉
+  if(shelfRaw === "" && stockRaw === "" && !existing) return;
   await saveCount(st.style, col.name, size, shelfRaw, stockRaw);
 }
 
