@@ -252,6 +252,64 @@
   .expr-hint{
     font-size:12px; color:var(--muted); font-weight:600;
   }
+  /* 標籤式算式編輯器 */
+  .expr-chips{
+    display:flex; flex-wrap:wrap; gap:6px; align-items:center;
+    min-height:48px; margin-top:6px;
+  }
+  .expr-chip-num{
+    background:#fdf3ef; color:var(--accent-deep);
+    padding:9px 14px; border-radius:8px;
+    font-size:22px; font-weight:800; font-family:inherit;
+    border:1.5px solid #f0d8cd; cursor:pointer; line-height:1;
+  }
+  .expr-chip-num:active{ background:#f7e3d8; }
+  .expr-chip-op{
+    padding:9px 12px; border-radius:8px;
+    font-size:19px; font-weight:800; line-height:1; cursor:pointer;
+  }
+  .expr-chip-op.op-plus{
+    background:#fdf3ef; color:var(--accent-deep); border:1.5px solid #f0d8cd;
+  }
+  .expr-chip-op.op-times{
+    background:#eef4fa; color:#2f5d8a; border:1.5px solid #b9cce0;
+  }
+  .expr-chip-op:active{ filter:brightness(0.94); }
+  .expr-newinput{
+    width:64px; font-size:22px; font-weight:800; text-align:center;
+    border:1.5px dashed var(--line); border-radius:8px;
+    padding:8px 4px; font-family:inherit; color:var(--ink);
+    background:#fff;
+  }
+  .expr-newinput:focus{ outline:none; border-color:var(--accent); border-style:solid; }
+  .expr-addbtns{ display:flex; gap:6px; margin-left:2px; }
+  .expr-addbtn{
+    width:32px; height:38px; border-radius:8px; font-size:18px; font-weight:800;
+    line-height:1; cursor:pointer; flex:0 0 auto;
+    display:flex; align-items:center; justify-content:center; padding:0;
+  }
+  .expr-addbtn.add-plus{ background:#fff; border:1.5px solid #e0b8a8; color:var(--accent-deep); }
+  .expr-addbtn.add-times{ background:#eef4fa; border:1.5px solid #b9cce0; color:#2f5d8a; }
+  .expr-addbtn:active{ filter:brightness(0.94); }
+  /* 點標籤後跳出的編輯彈窗 */
+  .chip-editor{
+    margin-top:10px; padding:12px;
+    background:#faf7f1; border:1.5px solid var(--line); border-radius:10px;
+  }
+  .chip-editor .ce-label{ font-size:13px; color:var(--muted); margin-bottom:8px; font-weight:600; }
+  .chip-editor .ce-row{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .chip-editor input{
+    width:80px; font-size:20px; font-weight:800; text-align:center;
+    border:1.5px solid var(--line); border-radius:8px; padding:8px 4px;
+    font-family:inherit; color:var(--ink); background:#fff;
+  }
+  .chip-editor input:focus{ outline:none; border-color:var(--accent); }
+  .chip-editor .ce-btn{
+    font-size:14px; padding:9px 14px; border-radius:8px; cursor:pointer;
+    border:1.5px solid var(--line); background:#fff; color:var(--ink); font-weight:700;
+  }
+  .chip-editor .ce-btn.primary{ background:var(--accent); color:#fff; border-color:var(--accent); }
+  .chip-editor .ce-btn.danger{ color:#a32d2d; border-color:#e3a89a; }
   .sum-row{
     display:flex; align-items:center; justify-content:space-between;
     background:#f1ece1; border-radius:12px;
@@ -347,7 +405,9 @@ var state = {
   curBrandIdx: 0,
   curStyleIdx: 0,
   curColorIdx: 0,
-  curSizeIdx: 0
+  curSizeIdx: 0,
+  exprShelf: "",        // 目前格位「架上」的算式字串（標籤編輯器的資料來源）
+  exprStock: ""         // 目前格位「庫存」的算式字串
 };
 
 function keyFor(style, color, size){ return style + "|" + color + "|" + size; }
@@ -736,6 +796,56 @@ function renderSetup(){
 }
 
 // ---------- COUNTING ----------
+
+// 把算式字串拆成 token 陣列，例如 "12×6+8" -> [{t:'num',v:'12'},{t:'op',v:'×'},{t:'num',v:'6'},{t:'op',v:'+'},{t:'num',v:'8'}]
+function tokenizeExpr(str){
+  if(!str) return [];
+  var s = String(str).trim().replace(/[xX]/g, "×");
+  if(s === "") return [];
+  var tokens = [];
+  var num = "";
+  for(var i=0;i<s.length;i++){
+    var ch = s[i];
+    if(ch === "+" || ch === "×"){
+      if(num !== ""){ tokens.push({t:'num', v:num}); num=""; }
+      tokens.push({t:'op', v:ch});
+    } else if(ch !== " "){
+      num += ch;
+    }
+  }
+  if(num !== "") tokens.push({t:'num', v:num});
+  return tokens;
+}
+
+// 把 token 陣列組回字串
+function tokensToStr(tokens){
+  return tokens.map(function(tk){ return tk.v; }).join("");
+}
+
+// 產生「標籤式算式編輯器」的 HTML。field 為 "shelf" 或 "stock"
+function renderExprEditor(field){
+  var exprStr = field === 'shelf' ? state.exprShelf : state.exprStock;
+  var tokens = tokenizeExpr(exprStr);
+  var html = '<div class="expr-chips" id="'+field+'-chips">';
+  tokens.forEach(function(tk, idx){
+    if(tk.t === 'num'){
+      html += '<span class="expr-chip-num" data-action="edit-token" data-field="'+field+'" data-idx="'+idx+'">'+escapeHtml(tk.v)+'</span>';
+    } else {
+      var opcls = tk.v === '×' ? 'op-times' : 'op-plus';
+      html += '<span class="expr-chip-op '+opcls+'" data-action="edit-token" data-field="'+field+'" data-idx="'+idx+'">'+escapeHtml(tk.v)+'</span>';
+    }
+  });
+  // 最後面的新增區：輸入框 + 加號/乘號按鈕
+  html += '<input class="expr-newinput" id="'+field+'-newinput" type="text" inputmode="decimal" placeholder="0">';
+  html += '<div class="expr-addbtns">'+
+    '<button class="expr-addbtn add-plus" data-action="add-token" data-field="'+field+'" data-op="+" type="button">+</button>'+
+    '<button class="expr-addbtn add-times" data-action="add-token" data-field="'+field+'" data-op="×" type="button">×</button>'+
+  '</div>';
+  html += '</div>';
+  html += '<div id="'+field+'-editor"></div>'; // 點標籤後的編輯彈窗會放這裡
+  return html;
+}
+
 function renderCounting(){
   var st = state.structure[state.curStyleIdx];
   var col = st.colors[state.curColorIdx];
@@ -761,8 +871,11 @@ function renderCounting(){
   }).join("");
 
   // 優先顯示原始算式文字（同一次開啟工具期間都會保留），沒有的話才顯示已存的數字
-  var shelfVal = existing.shelfExpr !== undefined ? existing.shelfExpr : (existing.shelf !== undefined ? existing.shelf : "");
-  var stockVal = existing.stockExpr !== undefined ? existing.stockExpr : (existing.stock !== undefined ? existing.stock : "");
+  var shelfVal = existing.shelfExpr !== undefined ? existing.shelfExpr : (existing.shelf !== undefined ? String(existing.shelf) : "");
+  var stockVal = existing.stockExpr !== undefined ? existing.stockExpr : (existing.stock !== undefined ? String(existing.stock) : "");
+  // 把目前格位的算式同步到 state，標籤編輯器以 state 為準
+  state.exprShelf = shelfVal;
+  state.exprStock = stockVal;
   var total = (existing.total !== undefined ? existing.total : (parseExpr(shelfVal) + parseExpr(stockVal)));
 
   var isFirst = state.curStyleIdx === 0 && state.curColorIdx === 0 && state.curSizeIdx === 0;
@@ -792,21 +905,11 @@ function renderCounting(){
       '<div class="input-grid">'+
         '<div class="num-box" id="shelf-box">'+
           '<label>架上</label>'+
-          '<input type="text" inputmode="decimal" id="shelf-input" value="'+shelfVal+'" placeholder="0">'+
-          '<div class="expr-row">'+
-            '<button class="plus-btn" data-action="insert-symbol" data-target="shelf-input" data-symbol="+" type="button">+</button>'+
-            '<button class="times-btn" data-action="insert-symbol" data-target="shelf-input" data-symbol="×" type="button">×</button>'+
-            '<span class="expr-hint" id="shelf-hint"></span>'+
-          '</div>'+
+          renderExprEditor('shelf')+
         '</div>'+
         '<div class="num-box" id="stock-box">'+
           '<label>庫存</label>'+
-          '<input type="text" inputmode="decimal" id="stock-input" value="'+stockVal+'" placeholder="0">'+
-          '<div class="expr-row">'+
-            '<button class="plus-btn" data-action="insert-symbol" data-target="stock-input" data-symbol="+" type="button">+</button>'+
-            '<button class="times-btn" data-action="insert-symbol" data-target="stock-input" data-symbol="×" type="button">×</button>'+
-            '<span class="expr-hint" id="stock-hint"></span>'+
-          '</div>'+
+          renderExprEditor('stock')+
         '</div>'+
       '</div>'+
       '<div class="sum-row"><span class="sum-label">加總</span><span class="sum-val" id="sum-val">'+total+'</span></div>'+
@@ -946,8 +1049,11 @@ function escapeHtml(s){
 function bindEvents(){
   var app = document.getElementById("app");
 
-  app.querySelectorAll('[data-action]').forEach(function(el){
-    el.addEventListener('click', async function(){
+  if(!app._delegated){
+    app._delegated = true;
+    app.addEventListener('click', async function(ev){
+      var el = ev.target.closest('[data-action]');
+      if(!el || !app.contains(el)) return;
       var action = el.getAttribute('data-action');
 
       if(action === 'goto-home'){ state.view = "home"; render(); }
@@ -991,23 +1097,40 @@ function bindEvents(){
         render();
       }
 
-      else if(action === 'insert-symbol'){
-        var targetId = el.getAttribute('data-target');
-        var symbol = el.getAttribute('data-symbol');
-        var input = document.getElementById(targetId);
-        if(input){
-          var pos = input.selectionStart != null ? input.selectionStart : input.value.length;
-          var before = input.value.slice(0, pos);
-          var after = input.value.slice(pos);
-          var lastChar = before.slice(-1);
-          // 避免開頭就是運算符，也避免連續兩個運算符（+ 或 ×）
-          var insert = (before === "" || lastChar === "+" || lastChar === "×") ? "" : symbol;
-          input.value = before + insert + after;
-          var newPos = pos + insert.length;
-          input.focus();
-          input.setSelectionRange(newPos, newPos);
-          input.dispatchEvent(new Event('input'));
-        }
+      else if(action === 'add-token'){
+        var field = el.getAttribute('data-field');
+        var op = el.getAttribute('data-op');
+        addTokenToExpr(field, op);
+      }
+
+      else if(action === 'edit-token'){
+        var field = el.getAttribute('data-field');
+        var idx = Number(el.getAttribute('data-idx'));
+        openTokenEditor(field, idx);
+      }
+
+      else if(action === 'apply-token-num'){
+        var field = el.getAttribute('data-field');
+        var idx = Number(el.getAttribute('data-idx'));
+        applyTokenNum(field, idx);
+      }
+
+      else if(action === 'apply-token-op'){
+        var field = el.getAttribute('data-field');
+        var idx = Number(el.getAttribute('data-idx'));
+        var op = el.getAttribute('data-op');
+        applyTokenOp(field, idx, op);
+      }
+
+      else if(action === 'delete-token'){
+        var field = el.getAttribute('data-field');
+        var idx = Number(el.getAttribute('data-idx'));
+        deleteToken(field, idx);
+      }
+
+      else if(action === 'cancel-token-edit'){
+        var field = el.getAttribute('data-field');
+        document.getElementById(field+'-editor').innerHTML = "";
       }
 
       else if(action === 'next-slot'){
@@ -1186,48 +1309,164 @@ function bindEvents(){
         }
       }
     });
-  });
 
-  // live sum + autosave on blur
-  var shelfInput = document.getElementById('shelf-input');
-  var stockInput = document.getElementById('stock-input');
-  if(shelfInput && stockInput){
-    function updateSum(){
-      var shelfSum = parseExpr(shelfInput.value);
-      var stockSum = parseExpr(stockInput.value);
-      document.getElementById('sum-val').textContent = shelfSum + stockSum;
-      updateExprHint('shelf-input', 'shelf-hint');
-      updateExprHint('stock-input', 'stock-hint');
-    }
-    function handleInput(input){
-      updateSum();
-      autoSizeInput(input);
-    }
-    shelfInput.addEventListener('input', function(){ handleInput(shelfInput); });
-    stockInput.addEventListener('input', function(){ handleInput(stockInput); });
-    shelfInput.addEventListener('focus', function(){ document.getElementById('shelf-box').classList.add('focused'); });
-    shelfInput.addEventListener('blur', function(){ document.getElementById('shelf-box').classList.remove('focused'); persistCurrentInputs(); });
-    stockInput.addEventListener('focus', function(){ document.getElementById('stock-box').classList.add('focused'); });
-    stockInput.addEventListener('blur', function(){ document.getElementById('stock-box').classList.remove('focused'); persistCurrentInputs(); });
-    updateExprHint('shelf-input', 'shelf-hint');
-    updateExprHint('stock-input', 'stock-hint');
-    autoSizeInput(shelfInput);
-    autoSizeInput(stockInput);
+    // 標籤編輯器：用事件委派處理「最後新增輸入框」的 Enter 鍵（動態新增也有效）
+    app.addEventListener('keydown', function(ev){
+      var t = ev.target;
+      if(t && t.classList && t.classList.contains('expr-newinput') && ev.key === 'Enter'){
+        var field = t.id === 'shelf-newinput' ? 'shelf' : (t.id === 'stock-newinput' ? 'stock' : null);
+        if(field){ ev.preventDefault(); commitNewInput(field); }
+      }
+    });
+  }
+
+  refreshSum();
+}
+
+// 重新計算並顯示加總（讀 state 的兩個算式）
+function refreshSum(){
+  var sumEl = document.getElementById('sum-val');
+  if(sumEl){
+    sumEl.textContent = parseExpr(state.exprShelf) + parseExpr(state.exprStock);
   }
 }
 
-// 算式越長，字體自動縮小，確保整段算式都能看到、點得到（方便點到中間改數字）
-function autoSizeInput(input){
-  var len = input.value.length;
-  var size;
-  if(len <= 4) size = 38;
-  else if(len <= 6) size = 32;
-  else if(len <= 8) size = 27;
-  else if(len <= 10) size = 23;
-  else if(len <= 13) size = 19;
-  else if(len <= 16) size = 16;
-  else size = 14;
-  input.style.fontSize = size + "px";
+function getExpr(field){ return field === 'shelf' ? state.exprShelf : state.exprStock; }
+function setExpr(field, val){ if(field === 'shelf') state.exprShelf = val; else state.exprStock = val; }
+
+// 把最後輸入框裡的數字，先收進算式（如果有打東西的話）
+function commitNewInput(field){
+  var inp = document.getElementById(field+'-newinput');
+  if(!inp) return;
+  var v = inp.value.trim();
+  if(v === "") return;
+  var tokens = tokenizeExpr(getExpr(field));
+  // 如果目前結尾是運算符或空的，直接接數字；否則預設用 + 連接
+  if(tokens.length === 0){
+    tokens.push({t:'num', v:v});
+  } else if(tokens[tokens.length-1].t === 'op'){
+    tokens.push({t:'num', v:v});
+  } else {
+    tokens.push({t:'op', v:'+'});
+    tokens.push({t:'num', v:v});
+  }
+  setExpr(field, tokensToStr(tokens));
+  rerenderField(field);
+}
+
+// 按了 + 或 × 新增：先把輸入框內容收進去，再補上運算符，等待下一個數字
+function addTokenToExpr(field, op){
+  var inp = document.getElementById(field+'-newinput');
+  var pending = inp ? inp.value.trim() : "";
+  var tokens = tokenizeExpr(getExpr(field));
+  if(pending !== ""){
+    if(tokens.length > 0 && tokens[tokens.length-1].t === 'num'){
+      tokens.push({t:'op', v:'+'});
+    }
+    if(tokens.length === 0 || tokens[tokens.length-1].t === 'op'){
+      tokens.push({t:'num', v:pending});
+    }
+  }
+  // 結尾若已是運算符就先移除，避免連續兩個運算符
+  if(tokens.length > 0 && tokens[tokens.length-1].t === 'op'){
+    tokens.pop();
+  }
+  if(tokens.length === 0) return; // 還沒有任何數字，不能先放運算符
+  tokens.push({t:'op', v:op});
+  setExpr(field, tokensToStr(tokens));
+  rerenderField(field);
+}
+
+// 點某個 token 打開編輯彈窗
+function openTokenEditor(field, idx){
+  var tokens = tokenizeExpr(getExpr(field));
+  if(idx < 0 || idx >= tokens.length) return;
+  var tk = tokens[idx];
+  var editor = document.getElementById(field+'-editor');
+  if(!editor) return;
+  var html = '<div class="chip-editor">';
+  if(tk.t === 'num'){
+    html += '<div class="ce-label">修改這個數字</div>';
+    html += '<div class="ce-row">';
+    html += '<input id="'+field+'-edit-input" type="text" inputmode="decimal" value="'+escapeHtml(tk.v)+'">';
+    html += '<button class="ce-btn primary" data-action="apply-token-num" data-field="'+field+'" data-idx="'+idx+'">改好</button>';
+    html += '<button class="ce-btn danger" data-action="delete-token" data-field="'+field+'" data-idx="'+idx+'">刪除</button>';
+    html += '<button class="ce-btn" data-action="cancel-token-edit" data-field="'+field+'">取消</button>';
+    html += '</div>';
+  } else {
+    var other = tk.v === '×' ? '+' : '×';
+    html += '<div class="ce-label">這個運算符（目前是 '+escapeHtml(tk.v)+'）</div>';
+    html += '<div class="ce-row">';
+    html += '<button class="ce-btn primary" data-action="apply-token-op" data-field="'+field+'" data-idx="'+idx+'" data-op="'+other+'">改成 '+other+'</button>';
+    html += '<button class="ce-btn danger" data-action="delete-token" data-field="'+field+'" data-idx="'+idx+'">刪除（連同後面數字）</button>';
+    html += '<button class="ce-btn" data-action="cancel-token-edit" data-field="'+field+'">取消</button>';
+    html += '</div>';
+  }
+  html += '</div>';
+  editor.innerHTML = html;
+  var inp = document.getElementById(field+'-edit-input');
+  if(inp){ inp.focus(); inp.select(); }
+}
+
+function applyTokenNum(field, idx){
+  var inp = document.getElementById(field+'-edit-input');
+  if(!inp) return;
+  var v = inp.value.trim();
+  var tokens = tokenizeExpr(getExpr(field));
+  if(v === ""){ deleteToken(field, idx); return; }
+  if(idx >= 0 && idx < tokens.length && tokens[idx].t === 'num'){
+    tokens[idx].v = v;
+    setExpr(field, tokensToStr(tokens));
+  }
+  rerenderField(field);
+}
+
+function applyTokenOp(field, idx, op){
+  var tokens = tokenizeExpr(getExpr(field));
+  if(idx >= 0 && idx < tokens.length && tokens[idx].t === 'op'){
+    tokens[idx].v = op;
+    setExpr(field, tokensToStr(tokens));
+  }
+  rerenderField(field);
+}
+
+// 刪除 token：刪數字時連同它前面的運算符一起拿掉；刪運算符時連同後面的數字一起拿掉
+function deleteToken(field, idx){
+  var tokens = tokenizeExpr(getExpr(field));
+  if(idx < 0 || idx >= tokens.length) return;
+  if(tokens[idx].t === 'num'){
+    // 刪數字：若前面有運算符一起刪，否則若後面有運算符也一起刪
+    if(idx > 0 && tokens[idx-1].t === 'op'){
+      tokens.splice(idx-1, 2);
+    } else if(idx+1 < tokens.length && tokens[idx+1].t === 'op'){
+      tokens.splice(idx, 2);
+    } else {
+      tokens.splice(idx, 1);
+    }
+  } else {
+    // 刪運算符：連同後面那個數字一起刪
+    if(idx+1 < tokens.length && tokens[idx+1].t === 'num'){
+      tokens.splice(idx, 2);
+    } else {
+      tokens.splice(idx, 1);
+    }
+  }
+  setExpr(field, tokensToStr(tokens));
+  rerenderField(field);
+}
+
+// 只重畫某個欄位的標籤區（不整頁重繪，避免另一欄位的輸入中內容遺失）
+function rerenderField(field){
+  var box = document.getElementById(field+'-box');
+  if(!box) return;
+  var label = field === 'shelf' ? '架上' : '庫存';
+  box.innerHTML = '<label>'+label+'</label>' + renderExprEditor(field);
+  refreshSum();
+  // 重畫後自動聚焦新輸入框，方便連續輸入
+  setTimeout(function(){
+    var ni = document.getElementById(field+'-newinput');
+    if(ni) ni.focus();
+  }, 0);
 }
 
 // 把像 "65+65+96" 或 "12×6+8" 這種算式換算成總和，× 的運算優先於 +（例如 12×6+8 = 80）
@@ -1250,25 +1489,13 @@ function parseExpr(str){
   return sum;
 }
 
-// 如果輸入框裡有「+」或「×」，在下面顯示「= 總和」當提示，方便確認算對了
-function updateExprHint(inputId, hintId){
-  var input = document.getElementById(inputId);
-  var hint = document.getElementById(hintId);
-  if(!input || !hint) return;
-  if(input.value.indexOf("+") !== -1 || input.value.indexOf("×") !== -1 || /[xX]/.test(input.value)){
-    hint.textContent = "= " + parseExpr(input.value);
-  } else {
-    hint.textContent = "";
-  }
-}
-
 async function persistCurrentInputs(){
   if(state.view !== "counting") return;
-  var shelfInput = document.getElementById('shelf-input');
-  var stockInput = document.getElementById('stock-input');
-  if(!shelfInput || !stockInput) return;
-  var shelfRaw = shelfInput.value;
-  var stockRaw = stockInput.value;
+  // 先把兩個欄位「最後輸入框」尚未送出的數字收進算式
+  commitNewInput('shelf');
+  commitNewInput('stock');
+  var shelfRaw = state.exprShelf || "";
+  var stockRaw = state.exprStock || "";
   if(shelfRaw === "" && stockRaw === "") return; // nothing entered, don't mark as done
   var st = state.structure[state.curStyleIdx];
   var col = st.colors[state.curColorIdx];
