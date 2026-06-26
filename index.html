@@ -308,7 +308,8 @@ var APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwmO5IsfDIufHan6Y
 var state = {
   structure: null,
   counts: {},           // key "style|color|size" -> {shelf, stock}
-  view: "home",         // home | setup | counting | summary
+  view: "home",         // home | brandModels | setup | counting | summary
+  curBrandIdx: 0,
   curStyleIdx: 0,
   curColorIdx: 0,
   curSizeIdx: 0
@@ -404,17 +405,30 @@ async function regenerateSummarySheetsRemote(){
 }
 
 // ---------- Init ----------
-var CUSTOM_STYLE_ORDER = [
-  "UA2350","SR230","SR_SH2301",
-  "CP101","CP102","CP103","CP104","CP105","CP106",
-  "AG18000","AG21000","AG_L210","AG24000","AG28000",
-  "AG1000","AG2000","AG3000",
-  "KY T-24","KY T-L28",
-  "PL01","PL02","PL03","PL04","PL05",
-  "TH02","TH03","TH04",
-  "CAP-510","CAP-520","CAP-6","CAP-BH",
-  "GILDAN-76000系列"
+// 品牌分組：brand 為 null 代表「獨立顯示」（只有一個型號，點了直接進盤點，不用先選品牌）
+var BRAND_GROUPS = [
+  { brand: null, styles: ["UA2350"] },
+  { brand: null, styles: ["GILDAN-76000系列"] },
+  { brand: "SR", styles: ["SR230","SR_SH2301"] },
+  { brand: "CP", styles: ["CP101","CP102","CP103","CP104","CP105","CP106"] },
+  { brand: "AG短袖", styles: ["AG18000","AG21000","AG_L210","AG24000","AG28000"] },
+  { brand: "AG冬衣", styles: ["AG1000","AG2000","AG3000"] },
+  { brand: "KY", styles: ["KY T-24","KY T-L28"] },
+  { brand: "PL", styles: ["PL01","PL02","PL03","PL04","PL05"] },
+  { brand: "TH", styles: ["TH02","TH03","TH04"] },
+  { brand: "CAP", styles: ["CAP-510","CAP-520","CAP-6","CAP-BH"] },
+  { brand: null, styles: ["備品"] }
 ];
+
+var CUSTOM_STYLE_ORDER = [];
+BRAND_GROUPS.forEach(function(g){ CUSTOM_STYLE_ORDER = CUSTOM_STYLE_ORDER.concat(g.styles); });
+
+function findBrandGroupForStyle(styleName){
+  for(var i=0;i<BRAND_GROUPS.length;i++){
+    if(BRAND_GROUPS[i].styles.indexOf(styleName) !== -1) return BRAND_GROUPS[i];
+  }
+  return null;
+}
 
 function sortStructureByStyle(structure){
   var orderMap = {};
@@ -486,6 +500,7 @@ function styleProgress(style, counts){
 function render(){
   var app = document.getElementById("app");
   if(state.view === "home") app.innerHTML = renderHome();
+  else if(state.view === "brandModels") app.innerHTML = renderBrandModels();
   else if(state.view === "setup") app.innerHTML = renderSetup();
   else if(state.view === "counting") app.innerHTML = renderCounting();
   else if(state.view === "summary") app.innerHTML = renderSummary();
@@ -493,19 +508,51 @@ function render(){
 }
 
 // ---------- HOME ----------
+function findStyleIdx(styleName){
+  for(var i=0;i<state.structure.length;i++){
+    if(state.structure[i].style === styleName) return i;
+  }
+  return -1;
+}
+
+function groupProgress(group, counts){
+  var total=0, done=0;
+  group.styles.forEach(function(styleName){
+    var idx = findStyleIdx(styleName);
+    if(idx === -1) return;
+    var p = styleProgress(state.structure[idx], counts);
+    total += p.total; done += p.done;
+  });
+  return {total:total, done:done};
+}
+
 function renderHome(){
   var structure = state.structure;
   var total = totalSizeSlots(structure);
   var done = doneSizeSlots(structure, state.counts);
   var pct = total ? Math.round(done/total*100) : 0;
 
-  var rows = structure.map(function(st, sIdx){
-    var p = styleProgress(st, state.counts);
-    var pct2 = p.total ? Math.round(p.done/p.total*100) : 0;
-    return '<div class="list-row" data-action="open-style" data-style-idx="'+sIdx+'">'+
-      '<div class="left">'+escapeHtml(st.style)+
-      '<div class="meta">'+st.colors.length+' 色 · 已完成 '+p.done+'/'+p.total+'（'+pct2+'%）</div>'+
-      '</div><div class="chev">›</div></div>';
+  var rows = BRAND_GROUPS.map(function(g, gIdx){
+    if(g.brand === null){
+      // 獨立顯示：直接點進去盤點，不用先選品牌
+      var styleName = g.styles[0];
+      var idx = findStyleIdx(styleName);
+      if(idx === -1) return ""; // 該款式尚未建立在結構裡，先不顯示
+      var p = styleProgress(structure[idx], state.counts);
+      var pct2 = p.total ? Math.round(p.done/p.total*100) : 0;
+      return '<div class="list-row" data-action="open-style" data-style-idx="'+idx+'">'+
+        '<div class="left">'+escapeHtml(styleName)+
+        '<div class="meta">'+structure[idx].colors.length+' 色 · 已完成 '+p.done+'/'+p.total+'（'+pct2+'%）</div>'+
+        '</div><div class="chev">›</div></div>';
+    } else {
+      var gp = groupProgress(g, state.counts);
+      var pct3 = gp.total ? Math.round(gp.done/gp.total*100) : 0;
+      var existCount = g.styles.filter(function(s){ return findStyleIdx(s) !== -1; }).length;
+      return '<div class="list-row" data-action="open-brand" data-brand-idx="'+gIdx+'">'+
+        '<div class="left">'+escapeHtml(g.brand)+
+        '<div class="meta">'+existCount+' 個型號 · 已完成 '+gp.done+'/'+gp.total+'（'+pct3+'%）</div>'+
+        '</div><div class="chev">›</div></div>';
+    }
   }).join("");
 
   return ''+
@@ -521,13 +568,51 @@ function renderHome(){
   '</div>'+
   '<main>'+
     '<div class="panel">'+
-      '<h2>選擇要盤點的款式</h2>'+
-      '<p class="sub">點款式進入，逐色逐尺寸填寫，資料即時同步，多人可同時進行不同款式或顏色。</p>'+
+      '<h2>選擇品牌</h2>'+
+      '<p class="sub">點品牌進入選型號，再逐色逐尺寸填寫，資料即時同步，多人可同時進行不同款式或顏色。</p>'+
       (rows || emptyStateHtml('還沒有設定款式', '先到「編輯結構」加入款式、顏色與尺寸'))+
     '</div>'+
     '<button class="btn secondary" data-action="goto-summary">查看彙總 / 匯出貼回 Sheet</button>'+
   '</main>'+
   '<div class="footer-note">填寫的數字會即時存到雲端，所有人共用同一份資料</div>';
+}
+
+function renderBrandModels(){
+  var g = BRAND_GROUPS[state.curBrandIdx];
+  var structure = state.structure;
+
+  var rows = g.styles.map(function(styleName){
+    var idx = findStyleIdx(styleName);
+    if(idx === -1) return "";
+    var p = styleProgress(structure[idx], state.counts);
+    var pct2 = p.total ? Math.round(p.done/p.total*100) : 0;
+    return '<div class="list-row" data-action="open-style" data-style-idx="'+idx+'">'+
+      '<div class="left">'+escapeHtml(styleName)+
+      '<div class="meta">'+structure[idx].colors.length+' 色 · 已完成 '+p.done+'/'+p.total+'（'+pct2+'%）</div>'+
+      '</div><div class="chev">›</div></div>';
+  }).join("");
+
+  var gp = groupProgress(g, state.counts);
+  var pct = gp.total ? Math.round(gp.done/gp.total*100) : 0;
+
+  return ''+
+  '<div class="topbar">'+
+    '<div class="topbar-row">'+
+      '<button class="icon-btn" data-action="goto-home">‹ 品牌</button>'+
+      '<div class="brand">'+escapeHtml(g.brand)+'</div>'+
+      '<span style="width:60px"></span>'+
+    '</div>'+
+    '<div class="progress-wrap">'+
+      '<div class="progress-bar"><div class="progress-fill" style="width:'+pct+'%"></div></div>'+
+      '<div class="progress-label"><span>'+escapeHtml(g.brand)+' 進度 '+gp.done+' / '+gp.total+'</span><span>'+pct+'%</span></div>'+
+    '</div>'+
+  '</div>'+
+  '<main>'+
+    '<div class="panel">'+
+      '<h2>選擇型號</h2>'+
+      (rows || emptyStateHtml('這個品牌底下還沒有型號', '到「編輯結構」加入'))+
+    '</div>'+
+  '</main>';
 }
 
 function emptyStateHtml(title, sub){
@@ -581,6 +666,19 @@ function renderSetup(){
       '<button class="btn" data-action="add-style">新增這個款式</button>'+
     '</div>'+
     '<div class="panel">'+
+      '<h2>重新命名款式</h2>'+
+      '<p class="sub">會把結構設定跟已經填過的盤點數字一起改名，不會遺失資料。輸入時要跟目前的款式名稱完全一致（大小寫、底線都要對）。</p>'+
+      '<div class="field">'+
+        '<label>目前的款式名稱</label>'+
+        '<input type="text" id="rename-old" placeholder="例如：GILDAN-76000系列">'+
+      '</div>'+
+      '<div class="field">'+
+        '<label>改成</label>'+
+        '<input type="text" id="rename-new" placeholder="例如：76000">'+
+      '</div>'+
+      '<button class="btn" data-action="rename-style">重新命名</button>'+
+    '</div>'+
+    '<div class="panel">'+
       '<h2>整理原始資料（加快開啟速度）</h2>'+
       '<p class="sub">每次填寫架上/庫存都會新增一行記錄，用越久資料筆數越多。按這個會清掉每個格位重複的舊記錄，只保留最新一筆，盤點數字不會變、只是表格變小、開啟速度變快。建議每隔一段時間（例如每天結束時）按一次。</p>'+
       '<button class="btn secondary" data-action="compact-raw">整理原始資料</button>'+
@@ -624,11 +722,14 @@ function renderCounting(){
 
   var isFirst = state.curStyleIdx === 0 && state.curColorIdx === 0 && state.curSizeIdx === 0;
   var isLast = isLastSlot();
+  var parentGroup = findBrandGroupForStyle(st.style);
+  var backAction = (parentGroup && parentGroup.brand !== null) ? 'back-to-brand' : 'goto-home';
+  var backLabel = (parentGroup && parentGroup.brand !== null) ? ('‹ '+escapeHtml(parentGroup.brand)) : '‹ 品牌';
 
   return ''+
   '<div class="topbar">'+
     '<div class="topbar-row">'+
-      '<button class="icon-btn" data-action="goto-home">‹ 款式列表</button>'+
+      '<button class="icon-btn" data-action="'+backAction+'">'+backLabel+'</button>'+
       '<div class="brand">盤點中</div>'+
       '<span style="width:70px"></span>'+
     '</div>'+
@@ -803,8 +904,25 @@ function bindEvents(){
       var action = el.getAttribute('data-action');
 
       if(action === 'goto-home'){ state.view = "home"; render(); }
+      else if(action === 'back-to-brand'){
+        var st2 = state.structure[state.curStyleIdx];
+        var g2 = findBrandGroupForStyle(st2.style);
+        if(g2 && g2.brand !== null){
+          state.curBrandIdx = BRAND_GROUPS.indexOf(g2);
+          state.view = "brandModels";
+        } else {
+          state.view = "home";
+        }
+        render();
+      }
       else if(action === 'goto-setup'){ state.view = "setup"; render(); }
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
+
+      else if(action === 'open-brand'){
+        state.curBrandIdx = Number(el.getAttribute('data-brand-idx'));
+        state.view = "brandModels";
+        render();
+      }
 
       else if(action === 'open-style'){
         state.curStyleIdx = Number(el.getAttribute('data-style-idx'));
@@ -934,6 +1052,43 @@ function bindEvents(){
           await saveStructure(state.structure);
           render();
         }
+      }
+
+      else if(action === 'rename-style'){
+        var oldName = document.getElementById('rename-old').value.trim();
+        var newName = document.getElementById('rename-new').value.trim();
+        if(!oldName || !newName){ showToast("請填入目前名稱跟新名稱"); return; }
+        if(!confirm('確定要把「'+oldName+'」改名成「'+newName+'」嗎？已填過的盤點數字會一起搬過去。')){
+          return;
+        }
+        el.disabled = true;
+        el.textContent = "處理中…";
+        try{
+          var result = await apiPost({ action:"renameStyle", oldName:oldName, newName:newName });
+          if(result && result.ok){
+            var item = state.structure.find(function(s){ return s.style === oldName; });
+            if(item) item.style = newName;
+            state.structure = sortStructureByStyle(state.structure);
+            var newCounts = {};
+            Object.keys(state.counts).forEach(function(k){
+              if(k.indexOf(oldName+"|") === 0){
+                newCounts[newName+"|"+k.slice(oldName.length+1)] = state.counts[k];
+              } else {
+                newCounts[k] = state.counts[k];
+              }
+            });
+            state.counts = newCounts;
+            showToast("已改名，結構 "+result.structChanged+" 筆、盤點記錄 "+result.rawChanged+" 筆");
+            render();
+          } else {
+            showToast("改名失敗：" + (result && result.error ? result.error : "未知原因"));
+          }
+        }catch(e){
+          console.error("rename style failed", e);
+          showToast("改名失敗：" + (e && e.message ? e.message : "未知錯誤"));
+        }
+        el.disabled = false;
+        el.textContent = "重新命名";
       }
 
       else if(action === 'compact-raw'){
