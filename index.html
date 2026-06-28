@@ -425,7 +425,7 @@ var state = {
   structure: null,
   counts: {},           // key "style|color|size" -> {shelf, stock}
   view: "home",         // home | brandModels | setup | counting | summary
-  curBrandIdx: 0,
+  curBrandName: "",
   curStyleIdx: 0,
   curColorIdx: 0,
   curSizeIdx: 0,
@@ -528,40 +528,98 @@ async function regenerateSummarySheetsRemote(){
 }
 
 // ---------- Init ----------
-// 品牌分組：brand 為 null 代表「獨立顯示」（只有一個型號，點了直接進盤點，不用先選品牌）
-var BRAND_GROUPS = [
-  { brand: null, styles: ["UA2350"] },
-  { brand: null, styles: ["GILDAN-76000系列"] },
-  { brand: "SR", styles: ["SR230","SR_SH2301"] },
-  { brand: "CP", styles: ["CP101","CP102","CP103","CP104","CP105","CP106"] },
-  { brand: "AG短袖", styles: ["AG18000","AG21000","AG_L210","AG24000","AG28000"] },
-  { brand: "AG冬衣", styles: ["AG1000","AG2000","AG3000"] },
-  { brand: "KY", styles: ["KY T-24","KY T-L28"] },
-  { brand: "PL", styles: ["PL01","PL02","PL03","PL04","PL05"] },
-  { brand: "TH", styles: ["TH02","TH03","TH04"] },
-  { brand: "CAP", styles: ["CAP-510","CAP-520","CAP-6","CAP-BH"] },
-  { brand: null, styles: ["備品"] }
-];
+// 品牌顯示順序：依此順序排列品牌。未列出的品牌依字母順序排在後面。
+// 之後想調整品牌順序，只要改這個清單即可（純前端，不需要動後端）
+var BRAND_ORDER = ["SR","CP","AG短袖","AG冬衣","KY","PL","TH","CAP"];
 
-var CUSTOM_STYLE_ORDER = [];
-BRAND_GROUPS.forEach(function(g){ CUSTOM_STYLE_ORDER = CUSTOM_STYLE_ORDER.concat(g.styles); });
+// 動態計算「品牌分組」：完全根據 state.structure 裡每個款式的 brand 屬性，不再寫死任何款式名稱
+// 沒有設定品牌的款式 → 各自獨立顯示一格在首頁
+// 設定相同品牌的款式 → 自動聚集到該品牌底下
+// 回傳格式：[{brand: "CP"或null, styles: [款式名稱陣列]}, ...]
+function computeBrandGroups(){
+  if(!state.structure) return [];
+  var brandMap = {};  // brand -> [style names]
+  var standalone = []; // 沒品牌的，獨立顯示
+  state.structure.forEach(function(st){
+    var b = (st.brand || "").trim();
+    if(b){
+      if(!brandMap[b]) brandMap[b] = [];
+      brandMap[b].push(st.style);
+    } else {
+      standalone.push(st.style);
+    }
+  });
+  var orderMap = {};
+  BRAND_ORDER.forEach(function(name, idx){ orderMap[name] = idx; });
+
+  var groups = [];
+  // 1) 先放「獨立顯示」（沒品牌）的款式
+  standalone.forEach(function(s){ groups.push({brand:null, styles:[s]}); });
+  // 2) 再依 BRAND_ORDER 順序、再依字母順序，放品牌分組
+  var brandNames = Object.keys(brandMap).sort(function(a,b){
+    var ai = orderMap.hasOwnProperty(a) ? orderMap[a] : BRAND_ORDER.length + 1000;
+    var bi = orderMap.hasOwnProperty(b) ? orderMap[b] : BRAND_ORDER.length + 1000;
+    if(ai !== bi) return ai - bi;
+    return a.localeCompare(b, 'zh-Hant');
+  });
+  brandNames.forEach(function(name){
+    groups.push({brand:name, styles:brandMap[name]});
+  });
+  return groups;
+}
 
 function findBrandGroupForStyle(styleName){
-  for(var i=0;i<BRAND_GROUPS.length;i++){
-    if(BRAND_GROUPS[i].styles.indexOf(styleName) !== -1) return BRAND_GROUPS[i];
+  var groups = computeBrandGroups();
+  for(var i=0;i<groups.length;i++){
+    if(groups[i].styles.indexOf(styleName) !== -1) return groups[i];
   }
   return null;
 }
 
 function sortStructureByStyle(structure){
+  // 改成依 BRAND_ORDER 排序：同品牌的款式聚在一起，沒品牌的放最前面（獨立顯示）
   var orderMap = {};
-  CUSTOM_STYLE_ORDER.forEach(function(name, idx){ orderMap[name] = idx; });
+  BRAND_ORDER.forEach(function(name, idx){ orderMap[name] = idx; });
   return structure.slice().sort(function(a, b){
-    var ai = orderMap.hasOwnProperty(a.style) ? orderMap[a.style] : CUSTOM_STYLE_ORDER.length + 1000;
-    var bi = orderMap.hasOwnProperty(b.style) ? orderMap[b.style] : CUSTOM_STYLE_ORDER.length + 1000;
+    var ab = (a.brand || "").trim();
+    var bb = (b.brand || "").trim();
+    // 沒品牌的優先
+    if(!ab && bb) return -1;
+    if(ab && !bb) return 1;
+    if(!ab && !bb) return a.style.localeCompare(b.style, 'zh-Hant');
+    var ai = orderMap.hasOwnProperty(ab) ? orderMap[ab] : BRAND_ORDER.length + 1000;
+    var bi = orderMap.hasOwnProperty(bb) ? orderMap[bb] : BRAND_ORDER.length + 1000;
     if(ai !== bi) return ai - bi;
     return a.style.localeCompare(b.style, 'zh-Hant');
   });
+}
+
+// 把後端讀進來的結構正規化：強制 style、顏色名稱、尺寸都是字串型別
+// 因為 Google Sheet 會自動把純數字內容存成 number，前端比對會失敗（"76000" !== 76000）
+function normalizeStructure(structure){
+  if(!Array.isArray(structure)) return structure;
+  return structure.map(function(st){
+    return {
+      style: String(st.style),
+      brand: st.brand ? String(st.brand) : "",
+      colors: (st.colors || []).map(function(c){
+        return {
+          name: String(c.name),
+          sizes: (c.sizes || []).map(function(s){ return String(s); })
+        };
+      })
+    };
+  });
+}
+
+// counts 的 key 也要正規化（因為 key 裡含款式名稱，如果存成數字也會對不起來）
+function normalizeCounts(counts){
+  if(!counts || typeof counts !== 'object') return counts || {};
+  var out = {};
+  Object.keys(counts).forEach(function(k){
+    out[String(k)] = counts[k];
+  });
+  return out;
 }
 
 async function init(){
@@ -586,10 +644,160 @@ async function init(){
     return;
   }
 
-  state.structure = sortStructureByStyle(structure);
-  state.counts = counts;
+  state.structure = sortStructureByStyle(normalizeStructure(structure));
+  state.counts = normalizeCounts(counts);
   state.view = "home";
   render();
+  startAutoSync(); // 啟動背景自動同步
+}
+
+// 自動同步：每 SYNC_INTERVAL_MS 毫秒去後端拉一次最新資料，更新其他人填的數字到本地畫面
+var SYNC_INTERVAL_MS = 30000; // 30 秒同步一次
+var autoSyncTimer = null;
+var isSyncing = false;
+var lastSyncTime = null;
+
+function getSyncStatusText(){
+  if(!isPageVisible) return "💤 已暫停（切回前景自動恢復）";
+  if(isIdle) return "💤 閒置中已暫停（碰一下畫面即恢復）";
+  if(isSyncing) return "🔄 同步中...";
+  if(!lastSyncTime) return "每 30 秒自動同步一次";
+  var diff = Math.floor((Date.now() - lastSyncTime) / 1000);
+  if(diff < 5) return "✓ 剛剛已同步";
+  if(diff < 60) return "✓ " + diff + " 秒前更新";
+  return "✓ " + Math.floor(diff/60) + " 分鐘前更新";
+}
+
+// 在 summary 畫面右上角顯示「有新資料 點此刷新」提示，不會強制重畫
+function showSummaryUpdateHint(){
+  var hint = document.getElementById('summary-update-hint');
+  if(hint){
+    hint.style.display = 'inline-flex';
+  }
+}
+
+// 追蹤頁面是否在前景（被使用者實際看著）
+var isPageVisible = true;
+// 追蹤是否處於閒置狀態（畫面雖然開著但長時間沒操作）
+var isIdle = false;
+var IDLE_THRESHOLD_MS = 5 * 60 * 1000; // 5 分鐘沒操作就視為閒置
+var lastActivityTime = Date.now();
+var idleCheckTimer = null;
+
+function startAutoSync(){
+  if(autoSyncTimer) clearInterval(autoSyncTimer);
+  autoSyncTimer = setInterval(function(){
+    // 只有頁面在前景且使用者有在操作時才同步，背景或閒置時跳過以節省 Apps Script 配額
+    if(isPageVisible && !isIdle) syncFromBackend();
+  }, SYNC_INTERVAL_MS);
+
+  // 每分鐘檢查一次是否進入閒置狀態
+  if(idleCheckTimer) clearInterval(idleCheckTimer);
+  idleCheckTimer = setInterval(function(){
+    if(!isIdle && (Date.now() - lastActivityTime > IDLE_THRESHOLD_MS)){
+      isIdle = true;
+    }
+  }, 60000);
+
+  if(!window._visibilityBound){
+    window._visibilityBound = true;
+
+    // 監聽頁面可見性變化（手機鎖屏、切到其他 App、切到其他分頁都會觸發）
+    document.addEventListener('visibilitychange', function(){
+      var nowVisible = !document.hidden;
+      if(nowVisible && !isPageVisible){
+        // 從背景回到前景，立刻同步一次，讓使用者馬上看到最新資料
+        isPageVisible = true;
+        lastActivityTime = Date.now();
+        isIdle = false;
+        syncFromBackend();
+      } else if(!nowVisible){
+        isPageVisible = false;
+      }
+    });
+
+    // 監聽使用者操作：點擊、觸控、滑動、按鍵、滾動都算「有在用」
+    function markActivity(){
+      var wasIdle = isIdle;
+      lastActivityTime = Date.now();
+      if(wasIdle){
+        isIdle = false;
+        if(isPageVisible) syncFromBackend(); // 從閒置恢復，立刻同步一次
+      }
+    }
+    document.addEventListener('click', markActivity, true);
+    document.addEventListener('touchstart', markActivity, {passive:true, capture:true});
+    document.addEventListener('keydown', markActivity, true);
+    document.addEventListener('scroll', markActivity, {passive:true, capture:true});
+  }
+}
+
+async function syncFromBackend(){
+  if(isSyncing) return; // 上次還沒跑完就跳過這次
+  isSyncing = true;
+  try{
+    var all = await apiGet("all");
+    if(!all || !Array.isArray(all.structure)) return;
+
+    // 比對：跟目前的 state 比，看資料有沒有真的變動（避免無謂的「有新資料」提示）
+    var newStructure = normalizeStructure(all.structure);
+    var newCountsRaw = normalizeCounts(all.counts || {});
+    var hasChange = false;
+    // 比 counts：先比 key 數量，再逐個比 total
+    var oldKeys = Object.keys(state.counts);
+    var newKeys = Object.keys(newCountsRaw);
+    if(oldKeys.length !== newKeys.length){
+      hasChange = true;
+    } else {
+      for(var i=0;i<newKeys.length;i++){
+        var k = newKeys[i];
+        if(!state.counts.hasOwnProperty(k)){ hasChange = true; break; }
+        if(Number(state.counts[k].total) !== Number(newCountsRaw[k].total)){ hasChange = true; break; }
+      }
+    }
+    // 比結構（款式名稱數量）
+    if(!hasChange && newStructure.length !== state.structure.length){
+      hasChange = true;
+    }
+
+    // 更新結構（如果有人新增/刪除款式也會同步）
+    state.structure = sortStructureByStyle(newStructure);
+
+    // 更新盤點數字：合併最新後端資料，但保留「目前正在編輯這一格」的本地暫存算式（避免覆蓋使用者正在打的字）
+    var newCounts = newCountsRaw;
+    var currentEditingKey = null;
+    if(state.view === "counting" && state.structure[state.curStyleIdx]){
+      var st = state.structure[state.curStyleIdx];
+      if(st.colors[state.curColorIdx]){
+        var col = st.colors[state.curColorIdx];
+        var size = col.sizes[state.curSizeIdx];
+        if(size) currentEditingKey = keyFor(st.style, col.name, size);
+      }
+    }
+    // 如果使用者正在編輯某格、且本地 state 有未送出的算式，保留本地版本
+    if(currentEditingKey && state.counts[currentEditingKey]){
+      var localCurrent = state.counts[currentEditingKey];
+      newCounts[currentEditingKey] = localCurrent;
+    }
+    state.counts = newCounts;
+    lastSyncTime = Date.now();
+
+    // 重畫畫面（但不重畫 counting 跟 summary，避免破壞使用者操作狀態）
+    if(state.view === "home"){
+      if(hasChange) render();
+    } else if(state.view === "brandModels"){
+      if(hasChange) render();
+    } else if(state.view === "summary"){
+      // 只有資料真的有變動時才顯示「有新資料」提示，避免無謂打擾
+      if(hasChange) showSummaryUpdateHint();
+    }
+    // counting 畫面下故意不重畫，等使用者切換尺寸/顏色或按下一項時才會自然更新
+  }catch(e){
+    console.error("auto sync failed", e);
+    // 同步失敗就靜默略過，下一輪會再試
+  }finally{
+    isSyncing = false;
+  }
 }
 
 // 讀取失敗時顯示這個畫面，絕對不會自動清空或覆蓋任何已存在 Google Sheet 裡的款式設定
@@ -677,7 +885,8 @@ function renderHome(){
   var done = doneSizeSlots(structure, state.counts);
   var pct = total ? Math.round(done/total*100) : 0;
 
-  var rows = BRAND_GROUPS.map(function(g, gIdx){
+  var brandGroups = computeBrandGroups();
+  var rows = brandGroups.map(function(g){
     if(g.brand === null){
       // 獨立顯示：直接點進去盤點，不用先選品牌
       var styleName = g.styles[0];
@@ -693,7 +902,7 @@ function renderHome(){
       var gp = groupProgress(g, state.counts);
       var pct3 = gp.total ? Math.round(gp.done/gp.total*100) : 0;
       var existCount = g.styles.filter(function(s){ return findStyleIdx(s) !== -1; }).length;
-      return '<div class="list-row" data-action="open-brand" data-brand-idx="'+gIdx+'">'+
+      return '<div class="list-row" data-action="open-brand" data-brand-name="'+escapeHtml(g.brand)+'">'+
         '<div class="left">'+escapeHtml(g.brand)+
         '<div class="meta">'+existCount+' 個型號 · 已完成 '+gp.done+'/'+gp.total+'（'+pct3+'%）</div>'+
         '</div><div class="chev">›</div></div>';
@@ -710,6 +919,10 @@ function renderHome(){
       '<div class="progress-bar"><div class="progress-fill" style="width:'+pct+'%"></div></div>'+
       '<div class="progress-label"><span>整體進度 '+done+' / '+total+'</span><span>'+pct+'%</span></div>'+
     '</div>'+
+    '<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 16px 10px; font-size:12px; color:var(--muted);">'+
+      '<span id="sync-status">'+getSyncStatusText()+'</span>'+
+      '<button class="icon-btn" data-action="manual-sync" style="font-size:12px; padding:4px 10px;">🔄 立即更新</button>'+
+    '</div>'+
   '</div>'+
   '<main>'+
     '<div class="panel">'+
@@ -723,7 +936,13 @@ function renderHome(){
 }
 
 function renderBrandModels(){
-  var g = BRAND_GROUPS[state.curBrandIdx];
+  var brandGroups = computeBrandGroups();
+  var g = brandGroups.find(function(grp){ return grp.brand === state.curBrandName; });
+  if(!g){
+    // 該品牌已不存在（可能被重命名或刪除），回首頁
+    state.view = "home";
+    return renderHome();
+  }
   var structure = state.structure;
 
   var rows = g.styles.map(function(styleName){
@@ -768,10 +987,18 @@ function emptyStateHtml(title, sub){
 function renderSetup(){
   var structure = state.structure;
   var rows = structure.map(function(st, idx){
+    var brandLabel = st.brand
+      ? '<span style="background:#eef4fa; color:#2f5d8a; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">'+escapeHtml(st.brand)+'</span>'
+      : '<span style="background:#f1ece1; color:var(--muted); font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">未分組</span>';
     return '<div class="list-row">'+
-      '<div class="left">'+escapeHtml(st.style)+'<div class="meta">'+st.colors.map(function(c){return escapeHtml(c.name);}).join('、')+'</div></div>'+
+      '<div class="left">'+escapeHtml(st.style)+brandLabel+'<div class="meta">'+st.colors.map(function(c){return escapeHtml(c.name);}).join('、')+'</div></div>'+
       '<button class="icon-btn" data-action="delete-style" data-style-idx="'+idx+'" style="color:var(--accent-deep)">刪除</button>'+
     '</div>';
+  }).join("");
+
+  // 為「設定品牌」功能準備款式下拉選單
+  var styleOptions = structure.map(function(st){
+    return '<option value="'+escapeHtml(st.style)+'">'+escapeHtml(st.style)+(st.brand ? ' （目前：'+escapeHtml(st.brand)+'）' : ' （未分組）')+'</option>';
   }).join("");
 
   return ''+
@@ -787,8 +1014,21 @@ function renderSetup(){
     '</div>'+
     '<div class="panel">'+
       '<h2>目前的款式</h2>'+
-      '<p class="sub">每個款式可以有多個顏色，每個顏色有自己的尺寸清單。</p>'+
+      '<p class="sub">每個款式右側顯示它所屬的「品牌」，沒設定品牌的款式會獨立顯示在首頁。要修改品牌請用下面「設定款式所屬品牌」。</p>'+
       (rows || emptyStateHtml('尚無款式',''))+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>設定款式所屬品牌</h2>'+
+      '<p class="sub">把款式歸到某個品牌底下，首頁就會自動把同品牌的款式聚在一起。要讓款式獨立顯示，把品牌欄留空即可。改名款式後也可以用這個重新指定品牌。</p>'+
+      '<div class="field">'+
+        '<label>選擇要設定的款式</label>'+
+        '<select id="set-brand-style">'+styleOptions+'</select>'+
+      '</div>'+
+      '<div class="field">'+
+        '<label>品牌名稱（留空 = 獨立顯示在首頁）</label>'+
+        '<input type="text" id="set-brand-name" placeholder="例如：CP、AG短袖（中英文都可，相同名稱會自動聚在一起）">'+
+      '</div>'+
+      '<button class="btn" data-action="set-style-brand">套用品牌設定</button>'+
     '</div>'+
     '<div class="panel">'+
       '<h2>批次匯入（可分段貼上，或直接選檔案）</h2>'+
@@ -1039,10 +1279,10 @@ function renderSummary(){
     return t;
   }
 
-  // 依 BRAND_GROUPS 順序組裝畫面
+  // 依動態計算的品牌分組組裝畫面（從 state.structure 即時算出）
   var groupsHtml = "";
   var grandMissing = 0;
-  BRAND_GROUPS.forEach(function(g){
+  computeBrandGroups().forEach(function(g){
     var groupStyles = g.styles
       .map(function(name){ return structure.find(function(s){ return s.style === name; }); })
       .filter(function(s){ return s; });
@@ -1108,8 +1348,12 @@ function renderSummary(){
   '<div class="topbar"><div class="topbar-row">'+
     '<button class="icon-btn" data-action="goto-home">‹ 返回</button>'+
     '<div class="brand">彙總 / 匯出</div>'+
-    '<span style="width:60px"></span>'+
-  '</div></div>'+
+    '<button class="icon-btn" data-action="refresh-summary" style="font-size:12px; padding:6px 10px;">🔄 更新</button>'+
+  '</div>'+
+    '<div id="summary-update-hint" data-action="refresh-summary" style="display:none; cursor:pointer; background:#fff4e6; border-bottom:1px solid #f0d8cd; padding:8px 16px; font-size:13px; color:#c45a1e; text-align:center; font-weight:700;">'+
+      '🔔 有新資料，點此刷新明細'+
+    '</div>'+
+  '</div>'+
   '<main>'+
     '<div class="panel">'+
       '<h2>更新 Google Sheet 彙總分頁</h2>'+
@@ -1214,13 +1458,50 @@ function bindEvents(){
         var st2 = state.structure[state.curStyleIdx];
         var g2 = findBrandGroupForStyle(st2.style);
         if(g2 && g2.brand !== null){
-          state.curBrandIdx = BRAND_GROUPS.indexOf(g2);
+          state.curBrandName = g2.brand;
           state.view = "brandModels";
         } else {
           state.view = "home";
         }
         render();
       }
+      else if(action === 'manual-sync'){
+        var statusEl = document.getElementById('sync-status');
+        if(statusEl) statusEl.textContent = "🔄 同步中...";
+        await syncFromBackend();
+        showToast("已更新");
+      }
+
+      else if(action === 'refresh-summary'){
+        // 記住目前展開的品牌跟型號，刷新後重新展開（不破壞使用者的操作狀態）
+        var expandedBrands = [];
+        var expandedStyles = [];
+        document.querySelectorAll('.brand-group.expanded').forEach(function(g){
+          expandedBrands.push(g.getAttribute('data-brand-name'));
+        });
+        document.querySelectorAll('.style-group.expanded').forEach(function(sg){
+          var nameEl = sg.querySelector('.sg-name');
+          if(nameEl) expandedStyles.push(nameEl.textContent.trim().split(' ')[0]);
+        });
+        await syncFromBackend();
+        render();
+        // 重新展開原本展開的區塊
+        expandedBrands.forEach(function(name){
+          document.querySelectorAll('.brand-group').forEach(function(g){
+            if(g.getAttribute('data-brand-name') === name) g.classList.add('expanded');
+          });
+        });
+        expandedStyles.forEach(function(name){
+          document.querySelectorAll('.style-group').forEach(function(sg){
+            var nameEl = sg.querySelector('.sg-name');
+            if(nameEl && nameEl.textContent.trim().split(' ')[0] === name){
+              sg.classList.add('expanded');
+            }
+          });
+        });
+        showToast("明細已更新");
+      }
+
       else if(action === 'goto-setup'){
         var pwd = prompt('請輸入管理員密碼：');
         if(pwd === null) return; // 使用者按取消
@@ -1234,7 +1515,7 @@ function bindEvents(){
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
 
       else if(action === 'open-brand'){
-        state.curBrandIdx = Number(el.getAttribute('data-brand-idx'));
+        state.curBrandName = el.getAttribute('data-brand-name');
         state.view = "brandModels";
         render();
       }
@@ -1390,6 +1671,34 @@ function bindEvents(){
         await saveStructure(state.structure);
         showToast("已刪除「"+styleName+"」");
         render();
+      }
+
+      else if(action === 'set-style-brand'){
+        var styleName = document.getElementById('set-brand-style').value;
+        var brandName = document.getElementById('set-brand-name').value.trim();
+        if(!styleName){ showToast("請選擇要設定的款式"); return; }
+        var item = state.structure.find(function(s){ return s.style === styleName; });
+        if(!item){ showToast("找不到該款式"); return; }
+        item.brand = brandName;
+        el.disabled = true;
+        el.textContent = "儲存中…";
+        var ok = false;
+        try{
+          ok = await saveStructure(state.structure);
+        }catch(e){
+          console.error("set-style-brand failed", e);
+          ok = false;
+        }
+        el.disabled = false;
+        el.textContent = "套用品牌設定";
+        if(ok){
+          state.structure = sortStructureByStyle(state.structure);
+          showToast(brandName ? ('已將「'+styleName+'」設為品牌「'+brandName+'」') : ('「'+styleName+'」已設為獨立顯示'));
+          render();
+        } else {
+          // 儲存失敗，回復原本的設定
+          showToast("儲存失敗，請重試");
+        }
       }
 
       else if(action === 'rename-style'){
