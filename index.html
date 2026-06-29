@@ -504,10 +504,14 @@ async function loadAllCounts(structure){
 }
 async function saveCount(style, color, size, shelfRaw, stockRaw){
   var key = keyFor(style, color, size);
-  var shelfNum = parseExpr(shelfRaw);
-  var stockNum = parseExpr(stockRaw);
+  // 空白就維持空字串（代表沒填），有填才換算成數字（這樣才能區分「沒填」跟「填 0」）
+  var shelfEmpty = (shelfRaw === "" || shelfRaw === null || shelfRaw === undefined);
+  var stockEmpty = (stockRaw === "" || stockRaw === null || stockRaw === undefined);
+  var shelfNum = shelfEmpty ? "" : parseExpr(shelfRaw);
+  var stockNum = stockEmpty ? "" : parseExpr(stockRaw);
+  var total = (shelfEmpty && stockEmpty) ? "" : (parseExpr(shelfRaw) + parseExpr(stockRaw));
   var val = {
-    shelf: shelfNum, stock: stockNum, total: shelfNum + stockNum,
+    shelf: shelfNum, stock: stockNum, total: total,
     shelfExpr: shelfRaw, stockExpr: stockRaw // 原始算式文字，僅保留在本次開啟工具的記憶體中
   };
   state.counts[key] = val; // optimistic local update so UI feels instant
@@ -528,8 +532,7 @@ async function regenerateSummarySheetsRemote(){
 }
 
 // ---------- Init ----------
-// 品牌顯示順序：依此順序排列品牌。未列出的品牌依字母順序排在後面。
-// 之後想調整品牌順序，只要改這個清單即可（純前端，不需要動後端）
+// 品牌顯示順序：從後端載入（管理員可在設定頁調整）。後端還沒設定時用這個預設順序。
 var BRAND_ORDER = ["SR","CP","AG短袖","AG冬衣","KY","PL","TH","CAP"];
 
 // 動態計算「品牌分組」：完全根據 state.structure 裡每個款式的 brand 屬性，不再寫死任何款式名稱
@@ -631,6 +634,7 @@ async function init(){
     if(all && Array.isArray(all.structure)){
       structure = all.structure; // 即使是空陣列也算合法（代表這個 Sheet 還沒設定任何款式）
       counts = all.counts || {};
+      if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
     } else {
       fetchFailed = true;
     }
@@ -734,10 +738,13 @@ function startAutoSync(){
 
 async function syncFromBackend(){
   if(isSyncing) return; // 上次還沒跑完就跳過這次
+  // 在「管理用設定」畫面時完全不同步，避免背景資料覆蓋正在進行的品牌/結構編輯
+  if(state.view === "setup") return;
   isSyncing = true;
   try{
     var all = await apiGet("all");
     if(!all || !Array.isArray(all.structure)) return;
+    if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
 
     // 比對：跟目前的 state 比，看資料有沒有真的變動（避免無謂的「有新資料」提示）
     var newStructure = normalizeStructure(all.structure);
@@ -823,27 +830,34 @@ function totalSizeSlots(structure){
   structure.forEach(function(st){ st.colors.forEach(function(c){ n += c.sizes.length; }); });
   return n;
 }
+// 判斷某一格是否「完整填寫」：架上跟庫存兩格都要有值（含 0）才算完成，任一格空白都算未完成
+function slotComplete(c){
+  if(!c) return false;
+  var shelfFilled = (c.shelf !== "" && c.shelf !== null && c.shelf !== undefined);
+  var stockFilled = (c.stock !== "" && c.stock !== null && c.stock !== undefined);
+  return shelfFilled && stockFilled;
+}
 function doneSizeSlots(structure, counts){
   var n = 0;
   structure.forEach(function(st){
     st.colors.forEach(function(c){
       c.sizes.forEach(function(sz){
         var k = keyFor(st.style, c.name, sz);
-        if(counts[k] !== undefined){ n++; }
+        if(slotComplete(counts[k])){ n++; }
       });
     });
   });
   return n;
 }
 function colorDone(style, color, counts){
-  return color.sizes.every(function(sz){ return counts[keyFor(style.style, color.name, sz)] !== undefined; });
+  return color.sizes.every(function(sz){ return slotComplete(counts[keyFor(style.style, color.name, sz)]); });
 }
 function styleProgress(style, counts){
   var total=0, done=0;
   style.colors.forEach(function(c){
     c.sizes.forEach(function(sz){
       total++;
-      if(counts[keyFor(style.style, c.name, sz)] !== undefined) done++;
+      if(slotComplete(counts[keyFor(style.style, c.name, sz)])) done++;
     });
   });
   return {total:total, done:done};
@@ -1001,6 +1015,23 @@ function renderSetup(){
     return '<option value="'+escapeHtml(st.style)+'">'+escapeHtml(st.style)+(st.brand ? ' （目前：'+escapeHtml(st.brand)+'）' : ' （未分組）')+'</option>';
   }).join("");
 
+  // 為「調整品牌順序」準備清單：取出目前實際有在用的品牌（依現行順序）
+  var activeBrands = [];
+  computeBrandGroups().forEach(function(g){
+    if(g.brand !== null && activeBrands.indexOf(g.brand) === -1) activeBrands.push(g.brand);
+  });
+  var brandOrderRows = activeBrands.length === 0
+    ? emptyStateHtml('還沒有任何品牌', '先用上面「設定款式所屬品牌」建立品牌')
+    : activeBrands.map(function(b, i){
+        return '<div class="list-row">'+
+          '<div class="left">'+escapeHtml(b)+'</div>'+
+          '<div style="display:flex; gap:4px;">'+
+            '<button class="icon-btn" data-action="move-brand-up" data-brand="'+escapeHtml(b)+'" '+(i===0?'disabled style="opacity:.3"':'')+'>▲</button>'+
+            '<button class="icon-btn" data-action="move-brand-down" data-brand="'+escapeHtml(b)+'" '+(i===activeBrands.length-1?'disabled style="opacity:.3"':'')+'>▼</button>'+
+          '</div>'+
+        '</div>';
+      }).join("");
+
   return ''+
   '<div class="topbar"><div class="topbar-row">'+
     '<button class="icon-btn" data-action="goto-home">‹ 返回</button>'+
@@ -1029,6 +1060,11 @@ function renderSetup(){
         '<input type="text" id="set-brand-name" placeholder="例如：CP、AG短袖（中英文都可，相同名稱會自動聚在一起）">'+
       '</div>'+
       '<button class="btn" data-action="set-style-brand">套用品牌設定</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>調整品牌顯示順序</h2>'+
+      '<p class="sub">用上下箭頭調整品牌在首頁的排列順序。沒分組（獨立顯示）的款式固定在最前面，不在這裡排。</p>'+
+      brandOrderRows+
     '</div>'+
     '<div class="panel">'+
       '<h2>批次匯入（可分段貼上，或直接選檔案）</h2>'+
@@ -1157,7 +1193,7 @@ function renderCounting(){
     var k = keyFor(st.style, col.name, sz);
     var cls = "chip";
     if(i === state.curSizeIdx) cls += " active";
-    else if(state.counts[k] !== undefined) cls += " done";
+    else if(slotComplete(state.counts[k])) cls += " done";
     return '<button class="'+cls+'" data-action="jump-size" data-size-idx="'+i+'">'+escapeHtml(sz)+'</button>';
   }).join("");
 
@@ -1242,21 +1278,29 @@ function renderSummary(){
       col.sizes.forEach(function(sz){
         var key = keyFor(st.style, col.name, sz);
         var c = state.counts[key];
-        var isMissing = !c;
+        var shelfFilled = c && c.shelf !== "" && c.shelf !== null && c.shelf !== undefined;
+        var stockFilled = c && c.stock !== "" && c.stock !== null && c.stock !== undefined;
+        var isMissing = !(shelfFilled && stockFilled); // 任一格沒填都算未完成
         if(isMissing) missingCount++;
-        var shelf = c ? c.shelf : "";
-        var stock = c ? c.stock : "";
-        var total = c ? c.total : "";
+        var shelf = shelfFilled ? c.shelf : "";
+        var stock = stockFilled ? c.stock : "";
+        var total = (shelfFilled || stockFilled) ? ((Number(c.shelf)||0)+(Number(c.stock)||0)) : "";
         var rowStyle = isMissing ? ' style="background:#fff4e6;"' : '';
         var colorCell = isMissing
           ? '<td style="color:#c45a1e; font-weight:700; white-space:nowrap;"><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#e87a3e; margin-right:6px; vertical-align:middle;"></span>'+escapeHtml(col.name)+'</td>'
           : '<td>'+escapeHtml(col.name)+'</td>';
+        // 架上、庫存欄：沒填的那格顯示紅色「未填」，有填顯示數字
+        var shelfCell = shelfFilled
+          ? '<td class="num">'+shelf+'</td>'
+          : '<td class="num" style="color:#e87a3e; font-weight:700;">未填</td>';
+        var stockCell = stockFilled
+          ? '<td class="num">'+stock+'</td>'
+          : '<td class="num" style="color:#e87a3e; font-weight:700;">未填</td>';
         html += '<tr'+rowStyle+'>'+colorCell+'<td>'+escapeHtml(sz)+'</td>'+
-          '<td class="num">'+(shelf===""?'—':shelf)+'</td>'+
-          '<td class="num">'+(stock===""?'—':stock)+'</td>'+
+          shelfCell + stockCell +
           '<td class="num"><strong>'+(total===""?'—':total)+'</strong></td></tr>';
         tsvLines.push([st.style, col.name, sz, shelf, stock, total].join("\t"));
-        if(c){ styleShelf+=Number(c.shelf)||0; styleStock+=Number(c.stock)||0; styleTotal+=Number(c.total)||0; }
+        if(c){ styleShelf+=Number(c.shelf)||0; styleStock+=Number(c.stock)||0; styleTotal+=(Number(c.shelf)||0)+(Number(c.stock)||0); }
       });
     });
     html += '<tr style="background:#faf7f1;"><td colspan="2"><strong>小計</strong></td>'+
@@ -1671,6 +1715,31 @@ function bindEvents(){
         await saveStructure(state.structure);
         showToast("已刪除「"+styleName+"」");
         render();
+      }
+
+      else if(action === 'move-brand-up' || action === 'move-brand-down'){
+        var brand = el.getAttribute('data-brand');
+        // 取得目前實際使用中的品牌順序
+        var activeBrands = [];
+        computeBrandGroups().forEach(function(g){
+          if(g.brand !== null && activeBrands.indexOf(g.brand) === -1) activeBrands.push(g.brand);
+        });
+        var pos = activeBrands.indexOf(brand);
+        if(pos === -1) return;
+        var swapWith = action === 'move-brand-up' ? pos - 1 : pos + 1;
+        if(swapWith < 0 || swapWith >= activeBrands.length) return;
+        // 交換
+        var tmp = activeBrands[pos];
+        activeBrands[pos] = activeBrands[swapWith];
+        activeBrands[swapWith] = tmp;
+        BRAND_ORDER = activeBrands;
+        render(); // 先即時更新畫面
+        try{
+          await apiPost({ action:"saveBrandOrder", order: BRAND_ORDER });
+        }catch(e){
+          console.error("save brand order failed", e);
+          showToast("順序已更新，但儲存到雲端失敗，請檢查網路");
+        }
       }
 
       else if(action === 'set-style-brand'){
