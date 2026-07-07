@@ -320,6 +320,48 @@
   }
   table.summary th{ color:var(--muted); font-weight:700; font-size:12px; }
   table.summary td.num{ text-align:right; font-weight:600; }
+  .mini-btn{
+    font-size:11px; padding:4px 8px; border-radius:6px;
+    border:1.5px solid #b9cce0; background:#eef4fa; color:#2f5d8a;
+    font-weight:700; cursor:pointer; white-space:nowrap; font-family:inherit;
+  }
+  .mini-btn:active{ background:#2f5d8a; color:#fff; }
+  .mini-btn.marked{
+    border-color:#2f7a3e; background:#e8f5ec; color:#2f7a3e;
+  }
+  /* 複盤清單項目 */
+  .recount-item{
+    border:1px solid var(--line); border-radius:12px;
+    padding:14px; margin-bottom:12px; background:#fff;
+  }
+  .recount-item.done{ background:#fafcfb; border-color:#cfe6d7; }
+  .recount-item .ri-top{
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:12px; gap:8px;
+  }
+  .recount-item .ri-title{ font-size:15px; font-weight:800; color:var(--ink); }
+  .recount-item .ri-assignee{
+    font-size:12px; font-weight:700; padding:3px 10px; border-radius:12px;
+    background:#eef4fa; color:#2f5d8a; white-space:nowrap; flex:0 0 auto;
+  }
+  .recount-item .ri-assignee.unassigned{ background:#f1ece1; color:var(--muted); }
+  .recount-item .ri-nums{
+    display:flex; align-items:flex-end; gap:10px;
+  }
+  .recount-item .ri-num{ flex:1; text-align:center; }
+  .recount-item .ri-num-label{ font-size:11px; color:var(--muted); font-weight:700; margin-bottom:4px; }
+  .recount-item .ri-num-val{ font-size:20px; font-weight:800; }
+  .recount-item .ri-arrow{ color:var(--muted); font-size:16px; padding-bottom:6px; }
+  .recount-item .ri-input{
+    width:100%; font-size:20px; font-weight:800; text-align:center;
+    border:1.5px solid var(--accent); border-radius:8px; padding:6px 4px;
+    font-family:inherit; color:var(--ink); background:#fff;
+  }
+  .recount-item .ri-input:focus{ outline:none; background:#fffdf9; }
+  .recount-item .ri-calc-hint{
+    font-size:12px; color:var(--good); font-weight:700; text-align:center; margin-top:3px;
+  }
+  .recount-item .ri-actions{ margin-top:10px; text-align:right; }
   /* 彙總頁面：品牌分組摺疊 */
   .brand-group{
     border:1px solid var(--line); border-radius:10px;
@@ -424,7 +466,9 @@ var ADMIN_PASSWORD = "6666";
 var state = {
   structure: null,
   counts: {},           // key "style|color|size" -> {shelf, stock}
-  view: "home",         // home | brandModels | setup | counting | summary
+  recounts: {},         // key "style|color|size" -> {recount, assignee, markedAt} 複盤任務
+  recountFilter: "",    // 複盤清單的負責人篩選（空=全部）
+  view: "home",         // home | brandModels | setup | counting | summary | recount
   curBrandName: "",
   curStyleIdx: 0,
   curColorIdx: 0,
@@ -523,6 +567,38 @@ async function clearAllCountsRemote(){
   try{
     await apiPost({ action:"clearCounts" });
   }catch(e){ console.error("clear counts failed", e); showToast("清空失敗，請檢查網路"); }
+}
+// ---------- 複盤 API ----------
+async function markRecountRemote(style, color, size, assignee){
+  var key = keyFor(style, color, size);
+  // 本地先更新(樂觀更新)
+  var existing = state.recounts[key] || {};
+  state.recounts[key] = { recount: existing.recount !== undefined ? existing.recount : "", assignee: assignee || "", markedAt: existing.markedAt || "" };
+  try{
+    await apiPost({ action:"markRecount", style:style, color:color, size:size, assignee:assignee || "" });
+  }catch(e){ console.error("mark recount failed", e); showToast("標記失敗，請檢查網路"); }
+}
+async function unmarkRecountRemote(style, color, size){
+  var key = keyFor(style, color, size);
+  delete state.recounts[key];
+  try{
+    await apiPost({ action:"unmarkRecount", style:style, color:color, size:size });
+  }catch(e){ console.error("unmark recount failed", e); showToast("取消失敗，請檢查網路"); }
+}
+async function saveRecountValueRemote(style, color, size, recount){
+  var key = keyFor(style, color, size);
+  var existing = state.recounts[key] || {assignee:"", markedAt:""};
+  existing.recount = recount;
+  state.recounts[key] = existing;
+  try{
+    await apiPost({ action:"saveRecountValue", style:style, color:color, size:size, recount:recount });
+  }catch(e){ console.error("save recount value failed", e); showToast("儲存失敗，請檢查網路"); }
+}
+async function clearRecountsRemote(){
+  try{
+    await apiPost({ action:"clearRecounts" });
+    state.recounts = {};
+  }catch(e){ console.error("clear recounts failed", e); showToast("清空失敗，請檢查網路"); }
 }
 async function regenerateSummarySheetsRemote(){
   try{
@@ -625,16 +701,63 @@ function normalizeCounts(counts){
   return out;
 }
 
+// 載入畫面的計時器與階段控制
+var loadStartTime = null;
+var loadTimerInterval = null;
+var loadStage = "";
+
+function renderLoadingScreen(){
+  var app = document.getElementById("app");
+  app.innerHTML =
+    '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:70vh; padding:0 32px;">'+
+      '<div style="font-size:36px; margin-bottom:16px;">📦</div>'+
+      '<div id="load-stage" style="font-size:15px; font-weight:700; color:var(--ink); margin-bottom:6px;">連線中…</div>'+
+      '<div id="load-elapsed" style="font-size:13px; color:var(--muted); margin-bottom:20px;">已等待 0.0 秒</div>'+
+      '<div style="width:100%; max-width:280px; height:8px; background:#e9e3d6; border-radius:5px; overflow:hidden;">'+
+        '<div id="load-bar" style="height:100%; width:30%; background:var(--accent); border-radius:5px; animation:loadslide 1.2s ease-in-out infinite;"></div>'+
+      '</div>'+
+    '</div>'+
+    '<style>@keyframes loadslide{0%{margin-left:-30%}100%{margin-left:100%}}</style>';
+}
+
+function setLoadStage(text){
+  loadStage = text;
+  var el = document.getElementById("load-stage");
+  if(el) el.textContent = text;
+}
+
+function startLoadTimer(){
+  loadStartTime = Date.now();
+  if(loadTimerInterval) clearInterval(loadTimerInterval);
+  loadTimerInterval = setInterval(function(){
+    var el = document.getElementById("load-elapsed");
+    if(el){
+      var secs = ((Date.now() - loadStartTime) / 1000).toFixed(1);
+      el.textContent = "已等待 " + secs + " 秒";
+    }
+  }, 100);
+}
+
+function stopLoadTimer(){
+  if(loadTimerInterval){ clearInterval(loadTimerInterval); loadTimerInterval = null; }
+}
+
 async function init(){
+  renderLoadingScreen();
+  startLoadTimer();
+
   var structure = null;
   var counts = {};
   var fetchFailed = false;
   try{
+    setLoadStage("連線到雲端資料庫…");
     var all = await apiGet("all");
+    setLoadStage("整理款式與盤點資料…");
     if(all && Array.isArray(all.structure)){
       structure = all.structure; // 即使是空陣列也算合法（代表這個 Sheet 還沒設定任何款式）
       counts = all.counts || {};
       if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
+      if(all.recounts){ state.recounts = all.recounts; }
     } else {
       fetchFailed = true;
     }
@@ -642,6 +765,8 @@ async function init(){
     console.error("init load failed", e);
     fetchFailed = true;
   }
+
+  stopLoadTimer();
 
   if(fetchFailed || structure === null){
     renderLoadError();
@@ -745,6 +870,7 @@ async function syncFromBackend(){
     var all = await apiGet("all");
     if(!all || !Array.isArray(all.structure)) return;
     if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
+    if(all.recounts){ state.recounts = all.recounts; }
 
     // 比對：跟目前的 state 比，看資料有沒有真的變動（避免無謂的「有新資料」提示）
     var newStructure = normalizeStructure(all.structure);
@@ -871,6 +997,7 @@ function render(){
   else if(state.view === "setup") app.innerHTML = renderSetup();
   else if(state.view === "counting") app.innerHTML = renderCounting();
   else if(state.view === "summary") app.innerHTML = renderSummary();
+  else if(state.view === "recount") app.innerHTML = renderRecount();
   bindEvents();
 }
 
@@ -898,6 +1025,13 @@ function renderHome(){
   var total = totalSizeSlots(structure);
   var done = doneSizeSlots(structure, state.counts);
   var pct = total ? Math.round(done/total*100) : 0;
+
+  // 複盤任務入口：算出待複盤筆數
+  var recountKeys = Object.keys(state.recounts || {});
+  var recountCount = recountKeys.length;
+  var recountEntryHtml = recountCount > 0
+    ? '<button class="btn secondary" data-action="goto-recount" style="border-color:#e0b8a8; color:var(--accent-deep); margin-top:10px;">📋 複盤任務（'+recountCount+' 筆待處理）</button>'
+    : '';
 
   var brandGroups = computeBrandGroups();
   var rows = brandGroups.map(function(g){
@@ -945,6 +1079,7 @@ function renderHome(){
       (rows || emptyStateHtml('還沒有設定款式', '請管理人員到「管理用設定」加入款式、顏色與尺寸'))+
     '</div>'+
     '<button class="btn secondary" data-action="goto-summary">查看彙總 / 匯出貼回 Sheet</button>'+
+    recountEntryHtml+
   '</main>'+
   '<div class="footer-note">填寫的數字會即時存到雲端，所有人共用同一份資料</div>';
 }
@@ -1272,7 +1407,7 @@ function renderSummary(){
   // 先把所有資料按品牌分組
   function buildStyleTableHtml(st){
     var html = '<div style="overflow-x:auto;">'+
-      '<table class="summary"><thead><tr><th><span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#e87a3e; margin-right:4px; vertical-align:middle;"></span>顏色</th><th>尺寸</th><th>架上</th><th>庫存</th><th>加總</th></tr></thead><tbody>';
+      '<table class="summary"><thead><tr><th><span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#e87a3e; margin-right:4px; vertical-align:middle;"></span>顏色</th><th>尺寸</th><th>架上</th><th>庫存</th><th>加總</th><th>複盤</th></tr></thead><tbody>';
     var styleShelf=0, styleStock=0, styleTotal=0, missingCount=0;
     st.colors.forEach(function(col){
       col.sizes.forEach(function(sz){
@@ -1296,9 +1431,15 @@ function renderSummary(){
         var stockCell = stockFilled
           ? '<td class="num">'+stock+'</td>'
           : '<td class="num" style="color:#e87a3e; font-weight:700;">未填</td>';
+        // 複盤標記欄：已標記顯示藍勾(點可取消)，未標記顯示標記鈕
+        var isMarked = !!state.recounts[key];
+        var recountCell = isMarked
+          ? '<td class="num" style="white-space:nowrap;"><button class="mini-btn marked" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">✓已標記</button></td>'
+          : '<td class="num" style="white-space:nowrap;"><button class="mini-btn" data-action="mark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">標記複盤</button></td>';
         html += '<tr'+rowStyle+'>'+colorCell+'<td>'+escapeHtml(sz)+'</td>'+
           shelfCell + stockCell +
-          '<td class="num"><strong>'+(total===""?'—':total)+'</strong></td></tr>';
+          '<td class="num"><strong>'+(total===""?'—':total)+'</strong></td>'+
+          recountCell + '</tr>';
         tsvLines.push([st.style, col.name, sz, shelf, stock, total].join("\t"));
         if(c){ styleShelf+=Number(c.shelf)||0; styleStock+=Number(c.stock)||0; styleTotal+=(Number(c.shelf)||0)+(Number(c.stock)||0); }
       });
@@ -1306,7 +1447,7 @@ function renderSummary(){
     html += '<tr style="background:#faf7f1;"><td colspan="2"><strong>小計</strong></td>'+
       '<td class="num"><strong>'+styleShelf+'</strong></td>'+
       '<td class="num"><strong>'+styleStock+'</strong></td>'+
-      '<td class="num"><strong>'+styleTotal+'</strong></td></tr>';
+      '<td class="num"><strong>'+styleTotal+'</strong></td><td></td></tr>';
     html += '</tbody></table></div>';
     return {html:html, total:styleTotal, missing:missingCount};
   }
@@ -1418,6 +1559,109 @@ function renderSummary(){
     '</div>'+
   '</main>'+
   '<div id="tsv-data" style="display:none;">'+escapeHtml(tsvLines.join("\n"))+'</div>';
+}
+
+// ---------- 複盤清單畫面 ----------
+function renderRecount(){
+  var keys = Object.keys(state.recounts || {});
+
+  // 收集所有負責人(用於篩選)
+  var assignees = [];
+  keys.forEach(function(k){
+    var a = (state.recounts[k].assignee || "").trim();
+    if(a && assignees.indexOf(a) === -1) assignees.push(a);
+  });
+  assignees.sort(function(a,b){ return a.localeCompare(b, 'zh-Hant'); });
+
+  // 篩選器按鈕
+  var filterBtns = '<button class="chip'+(state.recountFilter===""?" active":"")+'" data-action="recount-filter" data-assignee="">全部</button>';
+  assignees.forEach(function(a){
+    filterBtns += '<button class="chip'+(state.recountFilter===a?" active":"")+'" data-action="recount-filter" data-assignee="'+escapeHtml(a)+'">'+escapeHtml(a)+'</button>';
+  });
+  // 未指派的也給一個篩選
+  var hasUnassigned = keys.some(function(k){ return !(state.recounts[k].assignee || "").trim(); });
+  if(hasUnassigned){
+    filterBtns += '<button class="chip'+(state.recountFilter==="__none__"?" active":"")+'" data-action="recount-filter" data-assignee="__none__">未指派</button>';
+  }
+
+  // 依篩選條件列出項目
+  var rowsHtml = "";
+  var shownCount = 0;
+  keys.forEach(function(k){
+    var r = state.recounts[k];
+    var assignee = (r.assignee || "").trim();
+    // 篩選
+    if(state.recountFilter === "__none__"){
+      if(assignee) return;
+    } else if(state.recountFilter !== ""){
+      if(assignee !== state.recountFilter) return;
+    }
+    shownCount++;
+    var parts = k.split("|");
+    var style = parts[0], color = parts[1], size = parts[2];
+    var c = state.counts[k];
+    // 第一次的加總
+    var firstShelf = c && c.shelf !== "" && c.shelf !== null && c.shelf !== undefined ? (Number(c.shelf)||0) : null;
+    var firstStock = c && c.stock !== "" && c.stock !== null && c.stock !== undefined ? (Number(c.stock)||0) : null;
+    var firstTotal = (firstShelf !== null || firstStock !== null) ? ((firstShelf||0)+(firstStock||0)) : null;
+    // 複盤值：r.recount 現在存的是算式文字（可能是純數字或 "50+30+12"）
+    var recountRaw = (r.recount !== null && r.recount !== undefined) ? String(r.recount) : "";
+    var hasRecount = recountRaw.trim() !== "";
+    var recountVal = hasRecount ? parseExpr(recountRaw) : null;
+    // 差異
+    var diffHtml = "";
+    if(firstTotal !== null && recountVal !== null){
+      var diff = recountVal - firstTotal;
+      var diffColor = diff === 0 ? "#2f7a3e" : "#c0392b";
+      var diffText = diff === 0 ? "一致 ✓" : (diff > 0 ? "+"+diff : ""+diff);
+      diffHtml = '<span style="color:'+diffColor+'; font-weight:700;">'+diffText+'</span>';
+    } else if(recountVal === null){
+      diffHtml = '<span style="color:var(--muted);">待複盤</span>';
+    }
+    // 若複盤是算式（含 + 或 ×），在輸入框下方顯示算出的合計
+    var recountCalcHint = (hasRecount && /[+×xX*]/.test(recountRaw))
+      ? '<div class="ri-calc-hint">= '+recountVal+'</div>'
+      : '';
+
+    rowsHtml += '<div class="recount-item'+(recountVal!==null?' done':'')+'">'+
+      '<div class="ri-top">'+
+        '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+'</div>'+
+        (assignee ? '<span class="ri-assignee">'+escapeHtml(assignee)+'</span>' : '<span class="ri-assignee unassigned">未指派</span>')+
+      '</div>'+
+      '<div class="ri-nums">'+
+        '<div class="ri-num"><div class="ri-num-label">第一次</div><div class="ri-num-val">'+(firstTotal!==null?firstTotal:'—')+'</div></div>'+
+        '<div class="ri-arrow">→</div>'+
+        '<div class="ri-num"><div class="ri-num-label">複盤（可加可乘）</div>'+
+          '<input class="ri-input" type="text" inputmode="text" value="'+escapeHtml(recountRaw)+'" placeholder="如 50+30" '+
+            'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-action="recount-input">'+
+          recountCalcHint+'</div>'+
+        '<div class="ri-num"><div class="ri-num-label">差異</div><div class="ri-num-val">'+diffHtml+'</div></div>'+
+      '</div>'+
+      '<div class="ri-actions">'+
+        '<button class="mini-btn" data-action="unmark-recount" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" style="border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep);">移除此項</button>'+
+      '</div>'+
+    '</div>';
+  });
+
+  if(shownCount === 0){
+    rowsHtml = emptyStateHtml('沒有複盤項目', keys.length === 0 ? '到彙總頁的明細，點「標記複盤」把要複盤的品項加進來' : '這個篩選條件下沒有項目');
+  }
+
+  return ''+
+  '<div class="topbar"><div class="topbar-row">'+
+    '<button class="icon-btn" data-action="goto-home">‹ 返回</button>'+
+    '<div class="brand">複盤任務</div>'+
+    '<button class="icon-btn" data-action="manual-sync-recount" style="font-size:12px; padding:6px 10px;">🔄 更新</button>'+
+  '</div></div>'+
+  '<main>'+
+    '<div class="panel">'+
+      '<h2>複盤清單</h2>'+
+      '<p class="sub">共 '+keys.length+' 筆。填入複盤重數的數字，會自動跟第一次盤點的加總對照差異。可依負責人篩選。</p>'+
+      '<div class="chip-strip" style="margin-bottom:14px;">'+filterBtns+'</div>'+
+      rowsHtml+
+    '</div>'+
+    (keys.length > 0 ? '<button class="btn secondary" data-action="clear-recounts" style="color:var(--accent-deep);border-color:var(--accent-deep)">清空所有複盤任務</button>' : '')+
+  '</main>';
 }
 
 // ---------- Excel export (one worksheet per 款式) ----------
@@ -1557,6 +1801,48 @@ function bindEvents(){
         render();
       }
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
+
+      else if(action === 'goto-recount'){ state.view = "recount"; state.recountFilter = ""; render(); }
+
+      else if(action === 'mark-recount'){
+        var style = el.getAttribute('data-style');
+        var color = el.getAttribute('data-color');
+        var size = el.getAttribute('data-size');
+        var assignee = prompt('要指派給誰複盤？（可留空，之後在複盤清單也能改）\n\n'+style+' · '+color+' · '+size);
+        if(assignee === null) return; // 取消
+        await markRecountRemote(style, color, size, assignee.trim());
+        showToast('已標記複盤'+(assignee.trim()?('，指派給 '+assignee.trim()):''));
+        render();
+      }
+
+      else if(action === 'unmark-recount'){
+        var style = el.getAttribute('data-style');
+        var color = el.getAttribute('data-color');
+        var size = el.getAttribute('data-size');
+        await unmarkRecountRemote(style, color, size);
+        showToast('已移除複盤標記');
+        render();
+      }
+
+      else if(action === 'recount-filter'){
+        state.recountFilter = el.getAttribute('data-assignee');
+        render();
+      }
+
+      else if(action === 'manual-sync-recount'){
+        await syncFromBackend();
+        render();
+        showToast('已更新');
+      }
+
+      else if(action === 'clear-recounts'){
+        if(!confirm('⚠️ 確定要清空所有複盤任務嗎？\n\n這會移除所有複盤標記跟已填的複盤數字（不影響第一次盤點的資料）。此動作無法復原。')){
+          return;
+        }
+        await clearRecountsRemote();
+        showToast('已清空複盤任務');
+        render();
+      }
 
       else if(action === 'open-brand'){
         state.curBrandName = el.getAttribute('data-brand-name');
@@ -1884,6 +2170,23 @@ function bindEvents(){
       if(t && t.classList && t.classList.contains('expr-newinput')){
         refreshSum();
       }
+      // 複盤算式輸入時，即時在輸入框下方顯示算出的合計
+      if(t && t.classList && t.classList.contains('ri-input')){
+        var raw = t.value.trim();
+        var wrap = t.parentNode; // .ri-num
+        var hint = wrap.querySelector('.ri-calc-hint');
+        var isExpr = /[+×xX*]/.test(raw);
+        if(isExpr && raw !== ""){
+          if(!hint){
+            hint = document.createElement('div');
+            hint.className = 'ri-calc-hint';
+            wrap.appendChild(hint);
+          }
+          hint.textContent = '= ' + parseExpr(raw);
+        } else if(hint){
+          hint.textContent = "";
+        }
+      }
     });
 
     // 安全網：輸入框失焦時（切到別的地方、收起鍵盤）自動把最後一個數字收進去並存檔
@@ -1891,6 +2194,17 @@ function bindEvents(){
       var t = ev.target;
       if(t && t.classList && t.classList.contains('expr-newinput')){
         persistCurrentInputs();
+      }
+      // 複盤算式輸入框失焦時存檔並更新差異
+      if(t && t.classList && t.classList.contains('ri-input')){
+        var style = t.getAttribute('data-style');
+        var color = t.getAttribute('data-color');
+        var size = t.getAttribute('data-size');
+        var val = t.value.trim(); // 直接存算式文字（如 "50+30"），對照時用 parseExpr 算
+        (async function(){
+          await saveRecountValueRemote(style, color, size, val);
+          if(state.view === "recount") render();
+        })();
       }
     }, true); // 用 capture，因為 blur 不會冒泡
 
