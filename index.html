@@ -362,6 +362,22 @@
     font-size:12px; color:var(--good); font-weight:700; text-align:center; margin-top:3px;
   }
   .recount-item .ri-actions{ margin-top:10px; text-align:right; }
+  .recount-item .ri-claim{
+    margin-top:12px; padding-top:12px; border-top:1px solid var(--line);
+    display:flex; align-items:center; gap:6px;
+  }
+  .recount-item .ri-claim-label{ font-size:13px; color:var(--muted); font-weight:700; flex:0 0 auto; }
+  .recount-item .ri-claim-input{
+    flex:1; font-size:14px; padding:8px 10px;
+    border:1.5px solid var(--line); border-radius:8px;
+    font-family:inherit; color:var(--ink); background:#fff; min-width:0;
+  }
+  .recount-item .ri-claim-input:focus{ outline:none; border-color:var(--accent); }
+  .recount-brand-head{
+    font-size:15px; font-weight:800; color:var(--accent-deep);
+    padding:10px 0 8px; margin-top:6px;
+    border-bottom:2px solid #f0d8cd; margin-bottom:12px;
+  }
   /* 彙總頁面：品牌分組摺疊 */
   .brand-group{
     border:1px solid var(--line); border-radius:10px;
@@ -467,7 +483,8 @@ var state = {
   structure: null,
   counts: {},           // key "style|color|size" -> {shelf, stock}
   recounts: {},         // key "style|color|size" -> {recount, assignee, markedAt} 複盤任務
-  recountFilter: "",    // 複盤清單的負責人篩選（空=全部）
+  recountFilter: "",    // 複盤清單的認領人篩選（空=全部）
+  recountBrandFilter: "", // 複盤清單的品牌篩選（空=全部）
   view: "home",         // home | brandModels | setup | counting | summary | recount
   curBrandName: "",
   curStyleIdx: 0,
@@ -1565,7 +1582,7 @@ function renderSummary(){
 function renderRecount(){
   var keys = Object.keys(state.recounts || {});
 
-  // 收集所有負責人(用於篩選)
+  // 收集所有認領人(用於篩選)
   var assignees = [];
   keys.forEach(function(k){
     var a = (state.recounts[k].assignee || "").trim();
@@ -1573,42 +1590,62 @@ function renderRecount(){
   });
   assignees.sort(function(a,b){ return a.localeCompare(b, 'zh-Hant'); });
 
-  // 篩選器按鈕
+  // 取得某個複盤項目所屬的品牌名稱(沒品牌回傳空字串)
+  function brandOfKey(k){
+    var style = k.split("|")[0];
+    var g = findBrandGroupForStyle(style);
+    return (g && g.brand) ? g.brand : "";
+  }
+
+  // 收集所有品牌(用於品牌篩選)
+  var brands = [];
+  keys.forEach(function(k){
+    var b = brandOfKey(k);
+    if(b && brands.indexOf(b) === -1) brands.push(b);
+  });
+  // 依 BRAND_ORDER 排序品牌
+  var orderMap = {};
+  BRAND_ORDER.forEach(function(name, idx){ orderMap[name] = idx; });
+  brands.sort(function(a,b){
+    var ai = orderMap.hasOwnProperty(a) ? orderMap[a] : 9999;
+    var bi = orderMap.hasOwnProperty(b) ? orderMap[b] : 9999;
+    if(ai !== bi) return ai - bi;
+    return a.localeCompare(b, 'zh-Hant');
+  });
+  var hasNoBrand = keys.some(function(k){ return !brandOfKey(k); });
+
+  // 認領人篩選器
   var filterBtns = '<button class="chip'+(state.recountFilter===""?" active":"")+'" data-action="recount-filter" data-assignee="">全部</button>';
   assignees.forEach(function(a){
     filterBtns += '<button class="chip'+(state.recountFilter===a?" active":"")+'" data-action="recount-filter" data-assignee="'+escapeHtml(a)+'">'+escapeHtml(a)+'</button>';
   });
-  // 未指派的也給一個篩選
   var hasUnassigned = keys.some(function(k){ return !(state.recounts[k].assignee || "").trim(); });
   if(hasUnassigned){
-    filterBtns += '<button class="chip'+(state.recountFilter==="__none__"?" active":"")+'" data-action="recount-filter" data-assignee="__none__">未指派</button>';
+    filterBtns += '<button class="chip'+(state.recountFilter==="__none__"?" active":"")+'" data-action="recount-filter" data-assignee="__none__">尚無人認領</button>';
   }
 
-  // 依篩選條件列出項目
-  var rowsHtml = "";
-  var shownCount = 0;
-  keys.forEach(function(k){
+  // 品牌篩選器
+  var brandFilterBtns = '<button class="chip'+(state.recountBrandFilter===""?" active":"")+'" data-action="recount-brand-filter" data-brand="">全部品牌</button>';
+  brands.forEach(function(b){
+    brandFilterBtns += '<button class="chip'+(state.recountBrandFilter===b?" active":"")+'" data-action="recount-brand-filter" data-brand="'+escapeHtml(b)+'">'+escapeHtml(b)+'</button>';
+  });
+  if(hasNoBrand){
+    brandFilterBtns += '<button class="chip'+(state.recountBrandFilter==="__nobrand__"?" active":"")+'" data-action="recount-brand-filter" data-brand="__nobrand__">未分組</button>';
+  }
+
+  // 產生單一複盤項目的 HTML
+  function buildRecountItem(k){
     var r = state.recounts[k];
     var assignee = (r.assignee || "").trim();
-    // 篩選
-    if(state.recountFilter === "__none__"){
-      if(assignee) return;
-    } else if(state.recountFilter !== ""){
-      if(assignee !== state.recountFilter) return;
-    }
-    shownCount++;
     var parts = k.split("|");
     var style = parts[0], color = parts[1], size = parts[2];
     var c = state.counts[k];
-    // 第一次的加總
     var firstShelf = c && c.shelf !== "" && c.shelf !== null && c.shelf !== undefined ? (Number(c.shelf)||0) : null;
     var firstStock = c && c.stock !== "" && c.stock !== null && c.stock !== undefined ? (Number(c.stock)||0) : null;
     var firstTotal = (firstShelf !== null || firstStock !== null) ? ((firstShelf||0)+(firstStock||0)) : null;
-    // 複盤值：r.recount 現在存的是算式文字（可能是純數字或 "50+30+12"）
     var recountRaw = (r.recount !== null && r.recount !== undefined) ? String(r.recount) : "";
     var hasRecount = recountRaw.trim() !== "";
     var recountVal = hasRecount ? parseExpr(recountRaw) : null;
-    // 差異
     var diffHtml = "";
     if(firstTotal !== null && recountVal !== null){
       var diff = recountVal - firstTotal;
@@ -1618,15 +1655,13 @@ function renderRecount(){
     } else if(recountVal === null){
       diffHtml = '<span style="color:var(--muted);">待複盤</span>';
     }
-    // 若複盤是算式（含 + 或 ×），在輸入框下方顯示算出的合計
     var recountCalcHint = (hasRecount && /[+×xX*]/.test(recountRaw))
       ? '<div class="ri-calc-hint">= '+recountVal+'</div>'
       : '';
-
-    rowsHtml += '<div class="recount-item'+(recountVal!==null?' done':'')+'">'+
+    return '<div class="recount-item'+(recountVal!==null?' done':'')+'">'+
       '<div class="ri-top">'+
         '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+'</div>'+
-        (assignee ? '<span class="ri-assignee">'+escapeHtml(assignee)+'</span>' : '<span class="ri-assignee unassigned">未指派</span>')+
+        (assignee ? '<span class="ri-assignee">'+escapeHtml(assignee)+' 處理</span>' : '<span class="ri-assignee unassigned">尚無人認領</span>')+
       '</div>'+
       '<div class="ri-nums">'+
         '<div class="ri-num"><div class="ri-num-label">第一次</div><div class="ri-num-val">'+(firstTotal!==null?firstTotal:'—')+'</div></div>'+
@@ -1637,14 +1672,61 @@ function renderRecount(){
           recountCalcHint+'</div>'+
         '<div class="ri-num"><div class="ri-num-label">差異</div><div class="ri-num-val">'+diffHtml+'</div></div>'+
       '</div>'+
-      '<div class="ri-actions">'+
-        '<button class="mini-btn" data-action="unmark-recount" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" style="border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep);">移除此項</button>'+
+      '<div class="ri-claim">'+
+        '<span class="ri-claim-label">複盤人：</span>'+
+        '<input class="ri-claim-input" type="text" value="'+escapeHtml(assignee)+'" placeholder="填你的名字" '+
+          'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-action="recount-claim">'+
+        '<button class="mini-btn" data-action="unmark-recount" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" style="border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep); margin-left:8px;">移除</button>'+
       '</div>'+
     '</div>';
+  }
+
+  // 判斷某 key 是否通過目前的篩選條件
+  function passFilter(k){
+    var assignee = (state.recounts[k].assignee || "").trim();
+    // 認領人篩選
+    if(state.recountFilter === "__none__"){ if(assignee) return false; }
+    else if(state.recountFilter !== ""){ if(assignee !== state.recountFilter) return false; }
+    // 品牌篩選
+    var b = brandOfKey(k);
+    if(state.recountBrandFilter === "__nobrand__"){ if(b) return false; }
+    else if(state.recountBrandFilter !== ""){ if(b !== state.recountBrandFilter) return false; }
+    return true;
+  }
+
+  // 把通過篩選的 key 依品牌分組
+  var shownCount = 0;
+  var byBrand = {}; // brand -> [keys]
+  var noBrandKeys = [];
+  keys.forEach(function(k){
+    if(!passFilter(k)) return;
+    shownCount++;
+    var b = brandOfKey(k);
+    if(b){ if(!byBrand[b]) byBrand[b]=[]; byBrand[b].push(k); }
+    else noBrandKeys.push(k);
   });
 
+  // 依品牌順序組裝分組區塊
+  var rowsHtml = "";
   if(shownCount === 0){
     rowsHtml = emptyStateHtml('沒有複盤項目', keys.length === 0 ? '到彙總頁的明細，點「標記複盤」把要複盤的品項加進來' : '這個篩選條件下沒有項目');
+  } else {
+    // 沒品牌的排最前
+    if(noBrandKeys.length > 0){
+      noBrandKeys.forEach(function(k){ rowsHtml += buildRecountItem(k); });
+    }
+    brands.forEach(function(b){
+      if(!byBrand[b]) return;
+      // 這個品牌有幾筆、幾筆已複盤
+      var total = byBrand[b].length;
+      var doneN = byBrand[b].filter(function(k){
+        var rc = state.recounts[k].recount;
+        return rc !== "" && rc !== null && rc !== undefined && String(rc).trim() !== "";
+      }).length;
+      rowsHtml += '<div class="recount-brand-head">'+escapeHtml(b)+
+        ' <span style="font-weight:600; color:var(--muted); font-size:12px;">（'+doneN+'/'+total+' 已複盤）</span></div>';
+      byBrand[b].forEach(function(k){ rowsHtml += buildRecountItem(k); });
+    });
   }
 
   return ''+
@@ -1656,8 +1738,11 @@ function renderRecount(){
   '<main>'+
     '<div class="panel">'+
       '<h2>複盤清單</h2>'+
-      '<p class="sub">共 '+keys.length+' 筆。填入複盤重數的數字，會自動跟第一次盤點的加總對照差異。可依負責人篩選。</p>'+
-      '<div class="chip-strip" style="margin-bottom:14px;">'+filterBtns+'</div>'+
+      '<p class="sub">共 '+keys.length+' 筆。填入複盤重數的數字（可加可乘），會自動跟第一次盤點的加總對照差異。多人可分工複盤不同格，各自填自己的複盤人。</p>'+
+      '<div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px;">依品牌篩選</div>'+
+      '<div class="chip-strip" style="margin-bottom:12px;">'+brandFilterBtns+'</div>'+
+      '<div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px;">依複盤人篩選</div>'+
+      '<div class="chip-strip" style="margin-bottom:16px;">'+filterBtns+'</div>'+
       rowsHtml+
     '</div>'+
     (keys.length > 0 ? '<button class="btn secondary" data-action="clear-recounts" style="color:var(--accent-deep);border-color:var(--accent-deep)">清空所有複盤任務</button>' : '')+
@@ -1802,16 +1887,15 @@ function bindEvents(){
       }
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
 
-      else if(action === 'goto-recount'){ state.view = "recount"; state.recountFilter = ""; render(); }
+      else if(action === 'goto-recount'){ state.view = "recount"; state.recountFilter = ""; state.recountBrandFilter = ""; render(); }
 
       else if(action === 'mark-recount'){
         var style = el.getAttribute('data-style');
         var color = el.getAttribute('data-color');
         var size = el.getAttribute('data-size');
-        var assignee = prompt('要指派給誰複盤？（可留空，之後在複盤清單也能改）\n\n'+style+' · '+color+' · '+size);
-        if(assignee === null) return; // 取消
-        await markRecountRemote(style, color, size, assignee.trim());
-        showToast('已標記複盤'+(assignee.trim()?('，指派給 '+assignee.trim()):''));
+        // 不問指派,直接加入清單(認領制:之後有空的人自己填名字)
+        await markRecountRemote(style, color, size, "");
+        showToast('已加入複盤清單');
         render();
       }
 
@@ -1826,6 +1910,11 @@ function bindEvents(){
 
       else if(action === 'recount-filter'){
         state.recountFilter = el.getAttribute('data-assignee');
+        render();
+      }
+
+      else if(action === 'recount-brand-filter'){
+        state.recountBrandFilter = el.getAttribute('data-brand');
         render();
       }
 
@@ -2203,6 +2292,17 @@ function bindEvents(){
         var val = t.value.trim(); // 直接存算式文字（如 "50+30"），對照時用 parseExpr 算
         (async function(){
           await saveRecountValueRemote(style, color, size, val);
+          if(state.view === "recount") render();
+        })();
+      }
+      // 認領人輸入框失焦時存名字(存進 assignee)
+      if(t && t.classList && t.classList.contains('ri-claim-input')){
+        var cstyle = t.getAttribute('data-style');
+        var ccolor = t.getAttribute('data-color');
+        var csize = t.getAttribute('data-size');
+        var cname = t.value.trim();
+        (async function(){
+          await markRecountRemote(cstyle, ccolor, csize, cname);
           if(state.view === "recount") render();
         })();
       }
