@@ -298,6 +298,7 @@
   .chip-strip{
     display:flex; gap:8px; overflow-x:auto; padding:2px 2px 8px;
     -webkit-overflow-scrolling:touch;
+    cursor:grab;
   }
   .chip-strip::-webkit-scrollbar{ display:none; }
   .chip{
@@ -1421,6 +1422,11 @@ function renderSummary(){
   var structure = state.structure;
   var tsvLines = ["款式\t顏色\t尺寸\t架上\t庫存\t加總"];
 
+  // ERP 匯出用的款式下拉選單
+  var erpStyleOptions = structure.map(function(st){
+    return '<option value="'+escapeHtml(st.style)+'">'+escapeHtml(st.style)+'</option>';
+  }).join("");
+
   // 先把所有資料按品牌分組
   function buildStyleTableHtml(st){
     var html = '<div style="overflow-x:auto;">'+
@@ -1566,6 +1572,15 @@ function renderSummary(){
       '<h2>備用：下載 Excel 快照</h2>'+
       '<p class="sub">如果想要一份獨立的 Excel 檔（不在 Google Sheet 裡），可以用這個，結構跟上面的彙總分頁一樣。</p>'+
       '<button class="btn secondary" data-action="download-xlsx">下載 Excel（.xlsx）</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>匯出 ERP 匯入格式（品號／數量／倉別）</h2>'+
+      '<p class="sub">選一個款式，匯出成 ERP 可匯入的格式。品號會自動組成（如 101-01#XS），數量用第一次盤點的架上+庫存加總，倉別依款式自動帶入（AG1000/2000/3000、TH 系列為 A02，其餘 A01）。只匯出有盤過的格。</p>'+
+      '<div class="field">'+
+        '<label>選擇款式</label>'+
+        '<select id="erp-export-style">'+erpStyleOptions+'</select>'+
+      '</div>'+
+      '<button class="btn secondary" data-action="download-erp">匯出這個款式（ERP 格式）</button>'+
     '</div>'+
     '<div class="panel">'+
       '<h2>明細（依品牌分組）</h2>'+
@@ -1797,6 +1812,142 @@ function pad2(n){ return n < 10 ? "0"+n : ""+n; }
 function dateStr(){
   var d = new Date();
   return d.getFullYear() + pad2(d.getMonth()+1) + pad2(d.getDate());
+}
+
+// ---------- ERP 匯入格式匯出 ----------
+// 尺寸對照：工具寫法 → ERP 品號寫法
+var ERP_SIZE_MAP = {
+  "#6": "6 (120cm)",
+  "#8": "8 (130cm)",
+  "#10": "10 (140cm)",
+  "JS": "JS (120cm)",
+  "JM": "JM (130cm)",
+  "JL": "JL (140cm)",
+  "JXL": "JXL (150cm)",
+  "7XL": "7L",
+  "2XL": "2L",
+  "3XL": "3L",
+  "4XL": "4L",
+  "5XL": "5L",
+  "6XL": "6L"
+  // XS/S/M/L/XL/F 不用轉，直接原樣
+};
+
+function erpSize(sz){
+  return ERP_SIZE_MAP.hasOwnProperty(sz) ? ERP_SIZE_MAP[sz] : sz;
+}
+
+// 76000 專用：顏色編號數字 → ERP 完整編號(帶字母,不固定 C/H/N,故寫死對照)
+var ERP_76000_COLOR = {
+  "10":"10C","12":"12C","20":"20C","24":"24C","26":"26C","29":"29C","30":"30N",
+  "32":"32C","33":"33C","36":"36C","37":"37C","38":"38C","40":"40C","42":"42C",
+  "51":"51C","69":"69C","71":"71C","81":"81C","83":"83C","93":"93H","98":"98C",
+  "105":"105C","106":"106C","108":"108C","109":"109C","167":"167C","188":"188C",
+  "193":"193C","215":"215C","218":"218C","232":"232C","234":"234C","263":"263C",
+  "295":"295H","445":"445C","765":"765C"
+};
+
+// 款式名 → ERP 品號前綴。依實際 PDF 與品號範例校正：
+//  - CP 類：去掉 CP，只留數字（CP103 → 103）
+//  - CAP 類、T 類：橫線換成底線（CAP-510 → CAP_510、T-24 → T_24）
+//  - PL 類：PL 後面加底線（PL01 → PL_01）
+//  - 其他（UA2350、SR230、SR_SH2301、TH02、AG 系列、76000）：原樣保留
+function erpStyleNum(style){
+  var s = String(style);
+  if(/^CP/i.test(s)){
+    return s.replace(/[^0-9]/g, ""); // CP103 → 103
+  }
+  if(/^CAP/i.test(s) || /^T-/i.test(s) || /^T_/i.test(s)){
+    return s.replace(/-/g, "_"); // CAP-510 → CAP_510、T-24 → T_24
+  }
+  if(/^PL/i.test(s) && s.indexOf("_") === -1){
+    return s.replace(/^(PL)/i, "$1_"); // PL01 → PL_01（已有底線的不重複加）
+  }
+  return s; // 其他原樣
+}
+
+// 顏色編號要補幾位：UA2350、TH 系是三位（001），其他兩位（01）
+function colorCodeWidth(style){
+  var s = String(style);
+  if(/^UA2350/i.test(s) || /^TH/i.test(s)) return 3;
+  return 2;
+}
+
+// 從顏色名稱尾巴抽出 ERP 編號。
+//  - 76000 款式：抽數字後查對照表轉成帶字母編號（105 → 105C）
+//  - 數字+字母尾（工具顏色名本身就帶字母）：整段原樣抽出
+//  - 純數字尾：補到指定位數
+function erpColorCode(colorName, width, style){
+  var s = String(colorName);
+  // 76000 專用：抽尾數查對照表
+  if(/^76000/i.test(String(style))){
+    var mm = s.match(/(\d+)\s*$/);
+    if(mm){
+      var num = mm[1];
+      return ERP_76000_COLOR.hasOwnProperty(num) ? ERP_76000_COLOR[num] : num;
+    }
+    return "";
+  }
+  var m2 = s.match(/(\d+[A-Za-z]+)\s*$/);
+  if(m2) return m2[1]; // 顏色名本身帶字母
+  var m1 = s.match(/(\d+)\s*$/);
+  if(m1){
+    var n = m1[1];
+    while(n.length < width) n = "0" + n;
+    return n;
+  }
+  return "";
+}
+
+// 組合 ERP 品號：款式前綴 - 顏色編號 # 尺寸(ERP寫法)
+function erpItemCode(style, colorName, size){
+  var s = erpStyleNum(style);
+  var cc = erpColorCode(colorName, colorCodeWidth(style), style);
+  var sz = erpSize(size);
+  return s + "-" + cc + "#" + sz;
+}
+
+// 產生單一款式的 ERP 匯入格式工作表資料(品號/數量/倉別)。數量=第一次盤點加總
+// 依款式決定倉別：AG1000/AG2000/AG3000、TH02/TH03/TH04 是 A02，其他都是 A01
+function erpWarehouse(style){
+  var s = String(style);
+  var a02List = ["AG1000","AG2000","AG3000","TH02","TH03","TH04"];
+  return a02List.indexOf(s) !== -1 ? "A02" : "A01";
+}
+
+function buildErpRows(st){
+  var rows = [["品號","數量","倉別"]];
+  var wh = erpWarehouse(st.style);
+  st.colors.forEach(function(col){
+    col.sizes.forEach(function(sz){
+      var key = keyFor(st.style, col.name, sz);
+      var c = state.counts[key];
+      // 只匯出有填過的格(架上或庫存至少一格有值)
+      var shelfFilled = c && c.shelf !== "" && c.shelf !== null && c.shelf !== undefined;
+      var stockFilled = c && c.stock !== "" && c.stock !== null && c.stock !== undefined;
+      if(!shelfFilled && !stockFilled) return; // 沒盤過的不匯出
+      var total = (Number(c.shelf)||0) + (Number(c.stock)||0);
+      rows.push([erpItemCode(st.style, col.name, sz), total, wh]);
+    });
+  });
+  return rows;
+}
+
+// 匯出單一款式的 ERP 格式 Excel
+function downloadErpWorkbook(styleName){
+  if(typeof XLSX === "undefined"){
+    showToast("Excel 函式庫載入失敗，請檢查網路後重試");
+    return;
+  }
+  var st = state.structure.find(function(s){ return s.style === styleName; });
+  if(!st){ showToast("找不到款式 "+styleName); return; }
+  var rows = buildErpRows(st);
+  if(rows.length <= 1){ showToast("這個款式還沒有盤點資料，無法匯出"); return; }
+  var wb = XLSX.utils.book_new();
+  var ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:20},{wch:10},{wch:8}];
+  XLSX.utils.book_append_sheet(wb, ws, "工作表1");
+  XLSX.writeFile(wb, styleName + "-匯入盤點表.xlsx");
 }
 
 function downloadWorkbook(){
@@ -2210,6 +2361,11 @@ function bindEvents(){
         downloadWorkbook();
       }
 
+      else if(action === 'download-erp'){
+        var sel = document.getElementById('erp-export-style');
+        if(sel){ downloadErpWorkbook(sel.value); }
+      }
+
       else if(action === 'toggle-brand-group'){
         var group = el.closest('.brand-group');
         if(group){
@@ -2322,6 +2478,38 @@ function bindEvents(){
         };
         reader.readAsText(t.files[0], 'utf-8');
       }
+    });
+
+    // 電腦版：讓所有 .chip-strip 可以用滑鼠按住左右拖曳來捲動(手機本來就能滑)
+    var dragState = null;
+    app.addEventListener('mousedown', function(ev){
+      var strip = ev.target.closest ? ev.target.closest('.chip-strip') : null;
+      if(!strip) return;
+      dragState = {
+        strip: strip,
+        startX: ev.pageX,
+        startScroll: strip.scrollLeft,
+        moved: false
+      };
+      strip.style.cursor = 'grabbing';
+    });
+    document.addEventListener('mousemove', function(ev){
+      if(!dragState) return;
+      var dx = ev.pageX - dragState.startX;
+      if(Math.abs(dx) > 4) dragState.moved = true; // 超過 4px 才算拖曳
+      dragState.strip.scrollLeft = dragState.startScroll - dx;
+      if(dragState.moved) ev.preventDefault();
+    });
+    document.addEventListener('mouseup', function(ev){
+      if(!dragState) return;
+      dragState.strip.style.cursor = '';
+      // 若剛剛有拖曳,攔截接下來的 click(避免拖完手放開誤觸選到某個顏色)
+      if(dragState.moved){
+        var swallow = function(e){ e.stopPropagation(); e.preventDefault(); document.removeEventListener('click', swallow, true); };
+        document.addEventListener('click', swallow, true);
+        setTimeout(function(){ document.removeEventListener('click', swallow, true); }, 50);
+      }
+      dragState = null;
     });
   }
 
