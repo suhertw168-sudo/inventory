@@ -2483,6 +2483,11 @@ function bindEvents(){
     // 電腦版：讓所有 .chip-strip 可以用滑鼠按住左右拖曳來捲動(手機本來就能滑)
     var dragState = null;
     app.addEventListener('mousedown', function(ev){
+      // 點 +/× 按鈕時，先擋掉焦點轉移：讓輸入框不失焦、不觸發失焦存檔，
+      // 版面才不會在滑鼠放開前移動（否則按鈕位移會吃掉這次點擊，變成要點兩次）
+      var addBtn = ev.target.closest ? ev.target.closest('[data-action="add-token"]') : null;
+      if(addBtn){ ev.preventDefault(); return; }
+
       var strip = ev.target.closest ? ev.target.closest('.chip-strip') : null;
       if(!strip) return;
       dragState = {
@@ -2548,7 +2553,8 @@ function updateChipsInPlace(field, keepFocus){
 }
 
 // 把最後輸入框裡的數字，先收進算式（如果有打東西的話）
-function commitNewInput(field){
+function commitNewInput(field, keepFocus){
+  if(keepFocus === undefined) keepFocus = true; // 預設保持焦點(Enter鍵、按+號的情境)
   var inp = document.getElementById(field+'-newinput');
   if(!inp) return;
   var v = inp.value.trim();
@@ -2564,7 +2570,7 @@ function commitNewInput(field){
     tokens.push({t:'num', v:v});
   }
   setExpr(field, tokensToStr(tokens));
-  updateChipsInPlace(field, true);
+  updateChipsInPlace(field, keepFocus);
 }
 
 // 按了 + 或 × 新增：先把輸入框內容收進去，再補上運算符，等待下一個數字
@@ -2691,8 +2697,9 @@ function parseExpr(str){
 async function persistCurrentInputs(){
   if(state.view !== "counting") return;
   // 先把兩個欄位「最後輸入框」尚未送出的數字收進算式
-  commitNewInput('shelf');
-  commitNewInput('stock');
+  // 傳 false = 不搶回焦點（這裡多半是使用者點了別的欄位觸發的，搶焦點會害他要點兩次）
+  commitNewInput('shelf', false);
+  commitNewInput('stock', false);
   var shelfRaw = state.exprShelf || "";
   var stockRaw = state.exprStock || "";
   var st = state.structure[state.curStyleIdx];
