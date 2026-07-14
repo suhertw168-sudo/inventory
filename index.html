@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>盤點工具</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
 <style>
   :root{
     --ink:#1b1f23;
@@ -362,6 +362,7 @@
   .recount-item .ri-calc-hint{
     font-size:12px; color:var(--good); font-weight:700; text-align:center; margin-top:3px;
   }
+  .recount-item .ri-calc-hint.ri-calc-hint-error{ color:#c0392b; }
   .recount-item .ri-actions{ margin-top:10px; text-align:right; }
   .recount-item .ri-claim{
     margin-top:12px; padding-top:12px; border-top:1px solid var(--line);
@@ -379,6 +380,30 @@
     padding:10px 0 8px; margin-top:6px;
     border-bottom:2px solid #f0d8cd; margin-bottom:12px;
   }
+  /* 複盤進度總覽 */
+  .rp-brand-group{ margin-bottom:10px; }
+  .rp-pending-item{
+    border:1px solid var(--line); border-radius:8px;
+    padding:10px 12px; margin-bottom:8px; background:#fff;
+  }
+  .rp-pending-top{
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:4px;
+  }
+  .rp-pending-name{ font-size:13.5px; font-weight:800; color:var(--ink); }
+  .rp-pending-count{ font-size:12px; font-weight:700; color:var(--accent-deep); }
+  .rp-pending-missing{ font-size:12.5px; color:#c45a1e; line-height:1.5; }
+  .rp-done-wrap{ margin-top:4px; }
+  .rp-done-header{
+    display:flex; align-items:center; gap:4px;
+    font-size:12.5px; font-weight:700; color:#2f7a3e;
+    cursor:pointer; padding:8px 4px; user-select:none;
+  }
+  .rp-done-header .sg-arrow{ font-size:12px; transition:transform 0.18s ease; }
+  .rp-done-wrap.expanded .rp-done-header .sg-arrow{ transform:rotate(90deg); }
+  .rp-done-body{ display:none; padding:0 4px 4px; }
+  .rp-done-wrap.expanded .rp-done-body{ display:block; }
+  .rp-done-item{ font-size:12.5px; color:var(--good); padding:4px 0; font-weight:600; }
   /* 彙總頁面：品牌分組摺疊 */
   .brand-group{
     border:1px solid var(--line); border-radius:10px;
@@ -456,6 +481,28 @@
     pointer-events:none;
   }
   .toast.show{ opacity:1; }
+  /* 存檔失敗提示：不會自動消失，跟上面的 toast 不同 */
+  .save-error-panel{
+    position:fixed; top:12px; left:50%; transform:translateX(-50%);
+    width:calc(100% - 24px); max-width:480px;
+    z-index:60; display:flex; flex-direction:column; gap:8px;
+    pointer-events:none;
+  }
+  .save-error-card{
+    background:#fdecea; border:1.5px solid #e3a89a; border-radius:12px;
+    padding:12px 14px; box-shadow:var(--shadow);
+    color:#7a2e1e; pointer-events:auto;
+  }
+  .save-error-card .sec-title{ font-size:14px; font-weight:800; margin-bottom:3px; }
+  .save-error-card .sec-msg{ color:#8a5548; font-size:12.5px; line-height:1.5; margin-bottom:10px; }
+  .save-error-card .sec-actions{ display:flex; gap:8px; justify-content:flex-end; }
+  .save-error-card button{
+    font-size:12.5px; padding:6px 14px; border-radius:8px; cursor:pointer;
+    font-weight:700; font-family:inherit;
+  }
+  .save-error-card .sec-retry{ background:var(--accent-deep); color:#fff; border:none; }
+  .save-error-card .sec-dismiss{ background:transparent; color:#7a2e1e; border:1.5px solid #e3a89a; }
+  .chip.save-failed{ border-color:#c0392b; color:#c0392b; background:#fdecea; }
   .footer-note{
     text-align:center; font-size:11.5px; color:var(--muted); padding:6px 18px 0;
   }
@@ -468,6 +515,7 @@
 <body>
 <div id="app"><div class="loading">載入中…</div></div>
 <div class="toast" id="toast"></div>
+<div class="save-error-panel" id="save-error-panel"></div>
 
 <script>
 (function(){
@@ -492,7 +540,10 @@ var state = {
   curColorIdx: 0,
   curSizeIdx: 0,
   exprShelf: "",        // 目前格位「架上」的算式字串（標籤編輯器的資料來源）
-  exprStock: ""         // 目前格位「庫存」的算式字串
+  exprStock: "",        // 目前格位「庫存」的算式字串
+  pendingSaveKeys: {},  // key -> true，還在背景存檔中（包含自動重試階段）
+  failedSaveKeys: {},   // key -> 存檔失敗的原始資料，重試多次仍失敗、已還原畫面數字，等待手動重試
+  validationErrors: {}  // key -> {style,color,size,message}，算式格式錯誤、被擋下沒有存檔
 };
 
 function keyFor(style, color, size){ return style + "|" + color + "|" + size; }
@@ -564,23 +615,128 @@ async function loadAllCounts(structure){
   }catch(e){ console.error("loadAllCounts failed", e); showToast("讀取盤點資料失敗，請檢查網路"); }
   return {};
 }
-async function saveCount(style, color, size, shelfRaw, stockRaw){
-  var key = keyFor(style, color, size);
-  // 空白就維持空字串（代表沒填），有填才換算成數字（這樣才能區分「沒填」跟「填 0」）
+// ---------- 盤點數字存檔（樂觀更新＋背景重試） ----------
+var SAVE_RETRY_DELAYS_MS = [1500, 4000, 9000]; // 存檔失敗時的自動重試間隔（毫秒），共重試 3 次
+
+// 空白就維持空字串（代表沒填），有填才換算成數字（這樣才能區分「沒填」跟「填 0」）
+function buildCountVal(shelfRaw, stockRaw){
   var shelfEmpty = (shelfRaw === "" || shelfRaw === null || shelfRaw === undefined);
   var stockEmpty = (stockRaw === "" || stockRaw === null || stockRaw === undefined);
   var shelfNum = shelfEmpty ? "" : parseExpr(shelfRaw);
   var stockNum = stockEmpty ? "" : parseExpr(stockRaw);
   var total = (shelfEmpty && stockEmpty) ? "" : (parseExpr(shelfRaw) + parseExpr(stockRaw));
-  var val = {
+  return {
     shelf: shelfNum, stock: stockNum, total: total,
     shelfExpr: shelfRaw, stockExpr: stockRaw // 原始算式文字，僅保留在本次開啟工具的記憶體中
   };
-  state.counts[key] = val; // optimistic local update so UI feels instant
-  try{
-    await apiPost({ action:"saveCount", style:style, color:color, size:size, shelf:shelfNum, stock:stockNum });
-  }catch(e){ console.error("save count failed", e); showToast("儲存失敗，請檢查網路"); }
 }
+
+// 樂觀更新：立刻把新數字寫進畫面，背景送出存檔。呼叫端不用 await，畫面不會被網路卡住。
+function saveCountOptimistic(style, color, size, shelfRaw, stockRaw){
+  var key = keyFor(style, color, size);
+  var prevSnapshot = state.counts.hasOwnProperty(key) ? state.counts[key] : null;
+  state.counts[key] = buildCountVal(shelfRaw, stockRaw); // 立刻反映在畫面上
+  clearFailedSave(key); // 這格若之前標記過失敗，現在重新嘗試，先清掉舊的失敗提示
+  state.pendingSaveKeys[key] = true;
+  attemptSaveCount({style:style, color:color, size:size, shelfRaw:shelfRaw, stockRaw:stockRaw, prevSnapshot:prevSnapshot}, 0);
+}
+
+async function attemptSaveCount(payload, attemptIdx){
+  var key = keyFor(payload.style, payload.color, payload.size);
+  var val = buildCountVal(payload.shelfRaw, payload.stockRaw);
+  try{
+    await apiPost({ action:"saveCount", style:payload.style, color:payload.color, size:payload.size, shelf:val.shelf, stock:val.stock });
+    delete state.pendingSaveKeys[key];
+  }catch(e){
+    console.error("save count failed (attempt "+(attemptIdx+1)+")", e);
+    if(attemptIdx < SAVE_RETRY_DELAYS_MS.length){
+      setTimeout(function(){ attemptSaveCount(payload, attemptIdx+1); }, SAVE_RETRY_DELAYS_MS[attemptIdx]);
+    } else {
+      delete state.pendingSaveKeys[key];
+      handleSaveFailure(payload, e);
+    }
+  }
+}
+
+// 自動重試多次仍失敗：把畫面數字還原成存檔前的值，並跳出不會自動消失的提示（不能默默吞掉）
+function handleSaveFailure(payload, err){
+  var key = keyFor(payload.style, payload.color, payload.size);
+  if(payload.prevSnapshot){ state.counts[key] = payload.prevSnapshot; }
+  else { delete state.counts[key]; }
+  state.failedSaveKeys[key] = payload;
+  renderSaveErrorPanel();
+  // 使用者若還停留在這一格，重畫讓數字立刻變回還原後的值；已切到別格的話，該尺寸的標籤會標紅提示
+  if(state.view === "counting"){ render(); }
+}
+
+function clearFailedSave(key){
+  if(state.failedSaveKeys[key]){
+    delete state.failedSaveKeys[key];
+    renderSaveErrorPanel();
+  }
+}
+
+// 手動或斷線恢復後重試：用當初失敗那份資料重新走一次樂觀更新＋存檔流程
+function retryFailedSave(key){
+  var payload = state.failedSaveKeys[key];
+  if(!payload) return;
+  saveCountOptimistic(payload.style, payload.color, payload.size, payload.shelfRaw, payload.stockRaw);
+}
+
+function dismissFailedSave(key){
+  delete state.failedSaveKeys[key];
+  renderSaveErrorPanel();
+}
+
+// 算式格式錯誤、被擋下沒有存檔時顯示的提示（跟存檔失敗共用同一個提示區塊）
+function showValidationError(key, style, color, size, message){
+  state.validationErrors[key] = {style:style, color:color, size:size, message:message};
+  renderSaveErrorPanel();
+}
+function clearValidationError(key){
+  if(state.validationErrors[key]){
+    delete state.validationErrors[key];
+    renderSaveErrorPanel();
+  }
+}
+function dismissValidationError(key){
+  delete state.validationErrors[key];
+  renderSaveErrorPanel();
+}
+
+// 產生／更新畫面上方的提示卡片：存檔失敗（可重試）＋算式格式錯誤（需要使用者重新輸入）
+function renderSaveErrorPanel(){
+  var panel = document.getElementById('save-error-panel');
+  if(!panel) return;
+  var html = "";
+  Object.keys(state.failedSaveKeys).forEach(function(key){
+    var p = state.failedSaveKeys[key];
+    html += '<div class="save-error-card">'+
+      '<div class="sec-title">⚠️ 儲存失敗：'+escapeHtml(p.style)+' · '+escapeHtml(p.color)+' · '+escapeHtml(p.size)+'</div>'+
+      '<div class="sec-msg">畫面數字已還原，請確認網路後重試，或重新輸入這一格。</div>'+
+      '<div class="sec-actions">'+
+        '<button class="sec-dismiss" data-action="dismiss-save-error" data-key="'+escapeHtml(key)+'">關閉</button>'+
+        '<button class="sec-retry" data-action="retry-save" data-key="'+escapeHtml(key)+'">重試</button>'+
+      '</div>'+
+    '</div>';
+  });
+  Object.keys(state.validationErrors).forEach(function(key){
+    var v = state.validationErrors[key];
+    html += '<div class="save-error-card">'+
+      '<div class="sec-title">⚠️ 算式看不懂：'+escapeHtml(v.style)+' · '+escapeHtml(v.color)+' · '+escapeHtml(v.size)+'</div>'+
+      '<div class="sec-msg">'+escapeHtml(v.message)+'　（這一格還沒存進去，請修正後再離開）</div>'+
+      '<div class="sec-actions">'+
+        '<button class="sec-dismiss" data-action="dismiss-validation-error" data-key="'+escapeHtml(key)+'">關閉</button>'+
+      '</div>'+
+    '</div>';
+  });
+  panel.innerHTML = html;
+}
+
+// 網路恢復連線時，自動重試所有還在等待的失敗項目
+window.addEventListener('online', function(){
+  Object.keys(state.failedSaveKeys).forEach(function(key){ retryFailedSave(key); });
+});
 async function clearAllCountsRemote(){
   try{
     await apiPost({ action:"clearCounts" });
@@ -925,11 +1081,13 @@ async function syncFromBackend(){
         if(size) currentEditingKey = keyFor(st.style, col.name, size);
       }
     }
-    // 如果使用者正在編輯某格、且本地 state 有未送出的算式，保留本地版本
-    if(currentEditingKey && state.counts[currentEditingKey]){
-      var localCurrent = state.counts[currentEditingKey];
-      newCounts[currentEditingKey] = localCurrent;
-    }
+    // 保留「目前正在編輯這一格」「還在背景存檔中」「存檔失敗等待重試」這幾種本地版本，
+    // 避免這次同步抓到的舊資料蓋掉還沒存成功（或剛還原）的樂觀更新
+    var keysToKeepLocal = Object.keys(state.pendingSaveKeys).concat(Object.keys(state.failedSaveKeys));
+    if(currentEditingKey) keysToKeepLocal.push(currentEditingKey);
+    keysToKeepLocal.forEach(function(k){
+      if(state.counts.hasOwnProperty(k)){ newCounts[k] = state.counts[k]; }
+    });
     state.counts = newCounts;
     lastSyncTime = Date.now();
 
@@ -1017,6 +1175,43 @@ function render(){
   else if(state.view === "summary") app.innerHTML = renderSummary();
   else if(state.view === "recount") app.innerHTML = renderRecount();
   bindEvents();
+}
+
+// 判斷使用者是否正在編輯複盤畫面的某個輸入框（複盤數字或認領人）。
+// 用在非同步存檔完成後決定能不能整頁重畫：如果使用者存檔送出後很快又點回來繼續打字
+// （例如發現剛打錯字要刪掉重打），這時候絕對不能重畫，否則會把正在編輯的輸入框整個換掉，
+// 造成打字打到一半、或按刪除鍵時畫面突然被重置的狀況。
+function isEditingRecountField(){
+  var active = document.activeElement;
+  return !!(active && active.classList && (active.classList.contains('ri-input') || active.classList.contains('ri-claim-input')));
+}
+
+// 摘要頁重畫前先記住目前展開的品牌／型號分組，重畫後再展開回來，
+// 避免每次標記/取消複盤這類小動作都把使用者原本展開看的明細收合掉
+function render_keepExpanded(){
+  var expandedBrands = [];
+  var expandedStyles = [];
+  document.querySelectorAll('.brand-group.expanded').forEach(function(g){
+    expandedBrands.push(g.getAttribute('data-brand-name'));
+  });
+  document.querySelectorAll('.style-group.expanded').forEach(function(sg){
+    var nameEl = sg.querySelector('.sg-name');
+    if(nameEl) expandedStyles.push(nameEl.textContent.trim().split(' ')[0]);
+  });
+  render();
+  expandedBrands.forEach(function(name){
+    document.querySelectorAll('.brand-group').forEach(function(g){
+      if(g.getAttribute('data-brand-name') === name) g.classList.add('expanded');
+    });
+  });
+  expandedStyles.forEach(function(name){
+    document.querySelectorAll('.style-group').forEach(function(sg){
+      var nameEl = sg.querySelector('.sg-name');
+      if(nameEl && nameEl.textContent.trim().split(' ')[0] === name){
+        sg.classList.add('expanded');
+      }
+    });
+  });
 }
 
 // ---------- HOME ----------
@@ -1274,12 +1469,41 @@ function renderSetup(){
   '</main>';
 }
 
-// ---------- COUNTING ----------
+// ---------- 算式共用邏輯（初盤標籤編輯器、複盤輸入框都用同一套） ----------
+
+// 把可能的運算符號統一正規化成標準的 + 和 ×：
+// 乘號同時接受 × * x X ＊（全形星號）；加號同時接受 + ＋（全形加號）
+function normalizeExprSymbols(str){
+  return String(str).replace(/[×xX*＊]/g, "×").replace(/＋/g, "+");
+}
+
+// 驗證一個算式字串是否合法（可加可乘，例如 "12×6+8"）。
+// 空字串（或只有空白）視為合法，代表「還沒填」，回傳 null；
+// 格式有問題（看不懂的符號、運算符前後沒有數字）回傳錯誤訊息文字。
+function validateExpr(str){
+  if(str === null || str === undefined) return null;
+  var s = normalizeExprSymbols(str).replace(/\s+/g, "");
+  if(s === "") return null;
+  if(/[^0-9.+×]/.test(s)){
+    return "「"+str+"」有看不懂的符號，只能用數字、加號（+）或乘號（×／*／x）";
+  }
+  var terms = s.split("+");
+  for(var i=0;i<terms.length;i++){
+    var factors = terms[i].split("×");
+    for(var j=0;j<factors.length;j++){
+      var f = factors[j];
+      if(f === "" || isNaN(Number(f))){
+        return "「"+str+"」算式沒打完整，請確認每個 + 或 × 前後都有數字";
+      }
+    }
+  }
+  return null;
+}
 
 // 把算式字串拆成 token 陣列，例如 "12×6+8" -> [{t:'num',v:'12'},{t:'op',v:'×'},{t:'num',v:'6'},{t:'op',v:'+'},{t:'num',v:'8'}]
 function tokenizeExpr(str){
   if(!str) return [];
-  var s = String(str).trim().replace(/[xX]/g, "×");
+  var s = normalizeExprSymbols(str).replace(/\s+/g, "");
   if(s === "") return [];
   var tokens = [];
   var num = "";
@@ -1288,7 +1512,7 @@ function tokenizeExpr(str){
     if(ch === "+" || ch === "×"){
       if(num !== ""){ tokens.push({t:'num', v:num}); num=""; }
       tokens.push({t:'op', v:ch});
-    } else if(ch !== " "){
+    } else {
       num += ch;
     }
   }
@@ -1346,6 +1570,7 @@ function renderCounting(){
     var k = keyFor(st.style, col.name, sz);
     var cls = "chip";
     if(i === state.curSizeIdx) cls += " active";
+    else if(state.failedSaveKeys[k]) cls += " save-failed";
     else if(slotComplete(state.counts[k])) cls += " done";
     return '<button class="'+cls+'" data-action="jump-size" data-size-idx="'+i+'">'+escapeHtml(sz)+'</button>';
   }).join("");
@@ -1593,16 +1818,147 @@ function renderSummary(){
   '<div id="tsv-data" style="display:none;">'+escapeHtml(tsvLines.join("\n"))+'</div>';
 }
 
+// ---------- 複盤進度總覽（依品牌/款式彙總，只讀 state，不影響複盤存檔/樂觀更新/自動同步） ----------
+// 複盤是否已填：跟 buildRecountItem 裡既有判斷式邏輯一致（檢查字串是否為空，不是檢查數值），
+// 這裡獨立成一個函式給進度總覽用，不會去改動既有那幾處判斷式。
+function isRecountFilled(recountRaw){
+  return recountRaw !== null && recountRaw !== undefined && String(recountRaw).trim() !== "";
+}
+
+// 依款式彙總複盤進度：只統計「有標記複盤格子」的款式。
+// 回傳 { 款式名: { total, done, missing:[{color,size},...] } }
+function computeRecountStyleProgress(){
+  var byStyle = {};
+  Object.keys(state.recounts || {}).forEach(function(key){
+    var parts = key.split("|");
+    var style = parts[0], color = parts[1], size = parts[2];
+    if(!byStyle[style]) byStyle[style] = { total:0, done:0, missing:[] };
+    var entry = byStyle[style];
+    entry.total++;
+    if(isRecountFilled(state.recounts[key].recount)){ entry.done++; }
+    else { entry.missing.push({color:color, size:size}); }
+  });
+  return byStyle;
+}
+
+// 把款式進度依品牌分組：[{brand, styles:[{style,total,done,complete,missing}], doneCount, totalCount}, ...]
+// brand === "" 代表未分組，排最前面；其餘依 BRAND_ORDER 排序。每組內未完成款式排前面、已完成排後面。
+function computeRecountBrandProgress(){
+  var styleProgress = computeRecountStyleProgress();
+  var byBrand = {};
+  Object.keys(styleProgress).forEach(function(styleName){
+    var g = findBrandGroupForStyle(styleName);
+    var brandLabel = (g && g.brand) ? g.brand : "";
+    if(!byBrand[brandLabel]) byBrand[brandLabel] = [];
+    var p = styleProgress[styleName];
+    byBrand[brandLabel].push({
+      style: styleName,
+      total: p.total,
+      done: p.done,
+      complete: p.done === p.total,
+      missing: p.missing
+    });
+  });
+  var orderMap = {};
+  BRAND_ORDER.forEach(function(name, idx){ orderMap[name] = idx; });
+  var brandNames = Object.keys(byBrand).filter(function(b){ return b !== ""; }).sort(function(a,b){
+    var ai = orderMap.hasOwnProperty(a) ? orderMap[a] : 9999;
+    var bi = orderMap.hasOwnProperty(b) ? orderMap[b] : 9999;
+    if(ai !== bi) return ai - bi;
+    return a.localeCompare(b, 'zh-Hant');
+  });
+  var result = [];
+  if(byBrand[""]) result.push({ brand:"", styles: byBrand[""] });
+  brandNames.forEach(function(b){ result.push({ brand:b, styles: byBrand[b] }); });
+  result.forEach(function(g){
+    g.styles.sort(function(a,b){
+      if(a.complete !== b.complete) return a.complete ? 1 : -1; // 未完成優先
+      return a.style.localeCompare(b.style, 'zh-Hant');
+    });
+    g.doneCount = g.styles.filter(function(s){ return s.complete; }).length;
+    g.totalCount = g.styles.length;
+  });
+  return result;
+}
+
+// 把某款式「還差哪些格子」組成顯示文字，同色的尺寸合併，例如「藏青色 M、L」，多色用「；」分隔
+function formatMissingSlots(missing){
+  var byColor = {};
+  var colorOrder = [];
+  missing.forEach(function(m){
+    if(!byColor[m.color]){ byColor[m.color] = []; colorOrder.push(m.color); }
+    byColor[m.color].push(m.size);
+  });
+  return colorOrder.map(function(c){
+    return escapeHtml(c) + ' ' + byColor[c].map(escapeHtml).join('、');
+  }).join('；');
+}
+
+function renderRecountProgressOverview(){
+  var groups = computeRecountBrandProgress();
+  if(groups.length === 0) return "";
+
+  var groupsHtml = groups.map(function(g){
+    var label = g.brand === "" ? "未分組" : g.brand;
+    var allDone = g.totalCount > 0 && g.doneCount === g.totalCount;
+
+    var pendingStyles = g.styles.filter(function(s){ return !s.complete; });
+    var doneStyles = g.styles.filter(function(s){ return s.complete; });
+
+    var pendingHtml = pendingStyles.map(function(s){
+      return '<div class="rp-pending-item">'+
+        '<div class="rp-pending-top">'+
+          '<span class="rp-pending-name">'+escapeHtml(s.style)+'</span>'+
+          '<span class="rp-pending-count">'+s.done+'/'+s.total+'</span>'+
+        '</div>'+
+        '<div class="rp-pending-missing">還差：'+formatMissingSlots(s.missing)+'</div>'+
+      '</div>';
+    }).join("");
+
+    var doneHtml = doneStyles.length === 0 ? "" :
+      '<div class="rp-done-wrap">'+
+        '<div class="rp-done-header" data-action="toggle-rp-done">✓ 已完成 '+doneStyles.length+' 款（點此展開/收合）<span class="sg-arrow">›</span></div>'+
+        '<div class="rp-done-body">'+
+          doneStyles.map(function(s){ return '<div class="rp-done-item">✓ '+escapeHtml(s.style)+'</div>'; }).join("")+
+        '</div>'+
+      '</div>';
+
+    return '<div class="brand-group rp-brand-group'+(allDone ? '' : ' has-missing')+'">'+
+      '<div class="brand-group-header" data-action="toggle-brand-group">'+
+        '<div class="bg-left">'+
+          '<div>'+
+            '<div class="bg-name">'+(allDone ? '✅ ' : '')+escapeHtml(label)+'</div>'+
+            '<div class="bg-meta">'+g.doneCount+'/'+g.totalCount+' 款完成</div>'+
+          '</div>'+
+        '</div>'+
+        '<div class="bg-arrow">›</div>'+
+      '</div>'+
+      '<div class="brand-group-body">'+pendingHtml+doneHtml+'</div>'+
+    '</div>';
+  }).join("");
+
+  return '<div class="panel">'+
+    '<h2>複盤進度總覽</h2>'+
+    '<p class="sub">依品牌統計「已標記複盤」的款式完成情形（分母只計入有標記複盤格子的款式）。點品牌可展開查看細項。</p>'+
+    groupsHtml+
+  '</div>';
+}
+
 // ---------- 複盤清單畫面 ----------
 function renderRecount(){
   var keys = Object.keys(state.recounts || {});
 
-  // 收集所有認領人(用於篩選)
-  var assignees = [];
+  // 收集所有認領人(用於篩選)。認領人姓名都是英文字母，不分大小寫視為同一人
+  // （例如 "Amy" 跟 "amy" 歸類成同一個篩選項目），顯示用大小寫取第一次出現的那個寫法。
+  var assigneeCanonical = {}; // 小寫 -> 顯示用原始大小寫
   keys.forEach(function(k){
     var a = (state.recounts[k].assignee || "").trim();
-    if(a && assignees.indexOf(a) === -1) assignees.push(a);
+    if(a){
+      var lower = a.toLowerCase();
+      if(!assigneeCanonical.hasOwnProperty(lower)) assigneeCanonical[lower] = a;
+    }
   });
+  var assignees = Object.keys(assigneeCanonical).map(function(lower){ return assigneeCanonical[lower]; });
   assignees.sort(function(a,b){ return a.localeCompare(b, 'zh-Hant'); });
 
   // 取得某個複盤項目所屬的品牌名稱(沒品牌回傳空字串)
@@ -1632,7 +1988,8 @@ function renderRecount(){
   // 認領人篩選器
   var filterBtns = '<button class="chip'+(state.recountFilter===""?" active":"")+'" data-action="recount-filter" data-assignee="">全部</button>';
   assignees.forEach(function(a){
-    filterBtns += '<button class="chip'+(state.recountFilter===a?" active":"")+'" data-action="recount-filter" data-assignee="'+escapeHtml(a)+'">'+escapeHtml(a)+'</button>';
+    var isActive = state.recountFilter !== "" && state.recountFilter !== "__none__" && state.recountFilter.toLowerCase() === a.toLowerCase();
+    filterBtns += '<button class="chip'+(isActive?" active":"")+'" data-action="recount-filter" data-assignee="'+escapeHtml(a)+'">'+escapeHtml(a)+'</button>';
   });
   var hasUnassigned = keys.some(function(k){ return !(state.recounts[k].assignee || "").trim(); });
   if(hasUnassigned){
@@ -1670,7 +2027,7 @@ function renderRecount(){
     } else if(recountVal === null){
       diffHtml = '<span style="color:var(--muted);">待複盤</span>';
     }
-    var recountCalcHint = (hasRecount && /[+×xX*]/.test(recountRaw))
+    var recountCalcHint = (hasRecount && /[+×xX*＊＋]/.test(recountRaw))
       ? '<div class="ri-calc-hint">= '+recountVal+'</div>'
       : '';
     return '<div class="recount-item'+(recountVal!==null?' done':'')+'">'+
@@ -1699,9 +2056,9 @@ function renderRecount(){
   // 判斷某 key 是否通過目前的篩選條件
   function passFilter(k){
     var assignee = (state.recounts[k].assignee || "").trim();
-    // 認領人篩選
+    // 認領人篩選：姓名不分大小寫視為同一人
     if(state.recountFilter === "__none__"){ if(assignee) return false; }
-    else if(state.recountFilter !== ""){ if(assignee !== state.recountFilter) return false; }
+    else if(state.recountFilter !== ""){ if(assignee.toLowerCase() !== state.recountFilter.toLowerCase()) return false; }
     // 品牌篩選
     var b = brandOfKey(k);
     if(state.recountBrandFilter === "__nobrand__"){ if(b) return false; }
@@ -1751,6 +2108,7 @@ function renderRecount(){
     '<button class="icon-btn" data-action="manual-sync-recount" style="font-size:12px; padding:6px 10px;">🔄 更新</button>'+
   '</div></div>'+
   '<main>'+
+    renderRecountProgressOverview()+
     '<div class="panel">'+
       '<h2>複盤清單</h2>'+
       '<p class="sub">共 '+keys.length+' 筆。填入複盤重數的數字（可加可乘），會自動跟第一次盤點的加總對照差異。多人可分工複盤不同格，各自填自己的複盤人。</p>'+
@@ -1847,44 +2205,88 @@ var ERP_76000_COLOR = {
   "295":"295H","445":"445C","765":"765C"
 };
 
-// 款式名 → ERP 品號前綴。依實際 PDF 與品號範例校正：
-//  - CP 類：去掉 CP，只留數字（CP103 → 103）
-//  - CAP 類、T 類：橫線換成底線（CAP-510 → CAP_510、T-24 → T_24）
-//  - PL 類：PL 後面加底線（PL01 → PL_01）
-//  - 其他（UA2350、SR230、SR_SH2301、TH02、AG 系列、76000）：原樣保留
-function erpStyleNum(style){
+// ---------- ERP 品牌規則設定表 ----------
+// 每一列＝一個品牌／款式群組的 ERP 匯出規則，欄位都可省略，沒填就套用 ERP_RULE_DEFAULTS。
+//   match       — {prefix: /正則/}：款式名稱開頭比對；或 {styles:["精確款式名",...]}：精確比對
+//   styleNumber — 品號前綴轉換方式：
+//                   "asis"（預設，原樣不變）
+//                   "digitsOnly"（只留數字，CP103 → 103）
+//                   "dashToUnderscore"（橫線換底線，CAP-510 → CAP_510）
+//                   "insertUnderscoreAfterPrefix"（在符合 match.prefix 那段文字後插底線，PL01 → PL_01；已有底線就不重複插）
+//   colorWidth  — 顏色編號補零位數（預設 2）
+//   colorMap    — 顏色編號對照表，優先於補零規則使用（例如 76000 系列查表；查不到就回傳原始數字、不補零）
+//   warehouse   — 倉別代碼（預設 "A01"）
+//
+// 比對順序：先掃全表找「精確款式名稱（match.styles）」符合的列，找不到才依序找「前綴（match.prefix）」符合的列。
+// 所以像 TH02/03/04 這種「屬於 TH 系列、但倉別是例外」的列，放在陣列裡的前後順序不影響結果。
+//
+// 新增品牌只要在這個陣列加一列即可，不用改下面任何函式。
+var ERP_BRAND_RULES = [
+  { name:"76000",   match:{prefix:/^76000/i},                 colorMap: ERP_76000_COLOR },
+  { name:"CP",      match:{prefix:/^CP/i},                     styleNumber:"digitsOnly" },
+  { name:"CAP/T",   match:{prefix:/^(CAP|T[-_])/i},            styleNumber:"dashToUnderscore" },
+  { name:"PL",      match:{prefix:/^PL/i},                     styleNumber:"insertUnderscoreAfterPrefix" },
+  { name:"UA2350",  match:{prefix:/^UA2350/i},                 colorWidth:3 },
+  { name:"TH02-04", match:{styles:["TH02","TH03","TH04"]},     colorWidth:3, warehouse:"A02" },
+  { name:"TH",      match:{prefix:/^TH/i},                     colorWidth:3 },
+  { name:"AG倉別",   match:{styles:["AG1000","AG2000","AG3000"]}, warehouse:"A02" }
+];
+var ERP_RULE_DEFAULTS = { styleNumber:"asis", colorWidth:2, warehouse:"A01", colorMap:null };
+
+// 依款式名稱找出對應的規則列（缺的欄位補上預設值；完全找不到就回傳純預設值）
+function resolveErpRule(style){
   var s = String(style);
-  if(/^CP/i.test(s)){
-    return s.replace(/[^0-9]/g, ""); // CP103 → 103
+  for(var i=0;i<ERP_BRAND_RULES.length;i++){
+    var r = ERP_BRAND_RULES[i];
+    if(r.match.styles && r.match.styles.indexOf(s) !== -1) return mergeErpRule(r);
   }
-  if(/^CAP/i.test(s) || /^T-/i.test(s) || /^T_/i.test(s)){
-    return s.replace(/-/g, "_"); // CAP-510 → CAP_510、T-24 → T_24
+  for(var j=0;j<ERP_BRAND_RULES.length;j++){
+    var r2 = ERP_BRAND_RULES[j];
+    if(r2.match.prefix && r2.match.prefix.test(s)) return mergeErpRule(r2);
   }
-  if(/^PL/i.test(s) && s.indexOf("_") === -1){
-    return s.replace(/^(PL)/i, "$1_"); // PL01 → PL_01（已有底線的不重複加）
-  }
-  return s; // 其他原樣
+  return mergeErpRule({});
+}
+function mergeErpRule(rule){
+  return {
+    name: rule.name || "(預設)",
+    match: rule.match || null,
+    styleNumber: rule.styleNumber || ERP_RULE_DEFAULTS.styleNumber,
+    colorWidth: rule.colorWidth || ERP_RULE_DEFAULTS.colorWidth,
+    colorMap: rule.colorMap || ERP_RULE_DEFAULTS.colorMap,
+    warehouse: rule.warehouse || ERP_RULE_DEFAULTS.warehouse
+  };
 }
 
-// 顏色編號要補幾位：UA2350、TH 系是三位（001），其他兩位（01）
-function colorCodeWidth(style){
+// 依規則列的 styleNumber 類型，把款式名稱轉成 ERP 品號前綴
+function applyStyleNumberTransform(style, rule){
   var s = String(style);
-  if(/^UA2350/i.test(s) || /^TH/i.test(s)) return 3;
-  return 2;
+  if(rule.styleNumber === "digitsOnly"){
+    return s.replace(/[^0-9]/g, ""); // CP103 → 103
+  }
+  if(rule.styleNumber === "dashToUnderscore"){
+    return s.replace(/-/g, "_"); // CAP-510 → CAP_510、T-24 → T_24
+  }
+  if(rule.styleNumber === "insertUnderscoreAfterPrefix"){
+    if(s.indexOf("_") !== -1) return s; // 已有底線就不重複插
+    var prefixRe = (rule.match && rule.match.prefix) || /^[A-Za-z]+/;
+    var m = s.match(prefixRe);
+    if(m) return s.slice(0, m[0].length) + "_" + s.slice(m[0].length); // PL01 → PL_01
+    return s;
+  }
+  return s; // "asis"：原樣保留
 }
 
 // 從顏色名稱尾巴抽出 ERP 編號。
-//  - 76000 款式：抽數字後查對照表轉成帶字母編號（105 → 105C）
+//  - 有 colorMap：抽數字後查對照表（查不到就回傳原始數字，不補零）
 //  - 數字+字母尾（工具顏色名本身就帶字母）：整段原樣抽出
 //  - 純數字尾：補到指定位數
-function erpColorCode(colorName, width, style){
+function erpColorCode(colorName, rule){
   var s = String(colorName);
-  // 76000 專用：抽尾數查對照表
-  if(/^76000/i.test(String(style))){
+  if(rule.colorMap){
     var mm = s.match(/(\d+)\s*$/);
     if(mm){
       var num = mm[1];
-      return ERP_76000_COLOR.hasOwnProperty(num) ? ERP_76000_COLOR[num] : num;
+      return rule.colorMap.hasOwnProperty(num) ? rule.colorMap[num] : num;
     }
     return "";
   }
@@ -1893,7 +2295,7 @@ function erpColorCode(colorName, width, style){
   var m1 = s.match(/(\d+)\s*$/);
   if(m1){
     var n = m1[1];
-    while(n.length < width) n = "0" + n;
+    while(n.length < rule.colorWidth) n = "0" + n;
     return n;
   }
   return "";
@@ -1901,18 +2303,17 @@ function erpColorCode(colorName, width, style){
 
 // 組合 ERP 品號：款式前綴 - 顏色編號 # 尺寸(ERP寫法)
 function erpItemCode(style, colorName, size){
-  var s = erpStyleNum(style);
-  var cc = erpColorCode(colorName, colorCodeWidth(style), style);
+  var rule = resolveErpRule(style);
+  var s = applyStyleNumberTransform(style, rule);
+  var cc = erpColorCode(colorName, rule);
   var sz = erpSize(size);
   return s + "-" + cc + "#" + sz;
 }
 
 // 產生單一款式的 ERP 匯入格式工作表資料(品號/數量/倉別)。數量=第一次盤點加總
-// 依款式決定倉別：AG1000/AG2000/AG3000、TH02/TH03/TH04 是 A02，其他都是 A01
+// 依款式決定倉別：規則表裡沒設 warehouse 的一律是 A01
 function erpWarehouse(style){
-  var s = String(style);
-  var a02List = ["AG1000","AG2000","AG3000","TH02","TH03","TH04"];
-  return a02List.indexOf(s) !== -1 ? "A02" : "A01";
+  return resolveErpRule(style).warehouse;
 }
 
 function buildErpRows(st){
@@ -1997,32 +2398,8 @@ function bindEvents(){
       }
 
       else if(action === 'refresh-summary'){
-        // 記住目前展開的品牌跟型號，刷新後重新展開（不破壞使用者的操作狀態）
-        var expandedBrands = [];
-        var expandedStyles = [];
-        document.querySelectorAll('.brand-group.expanded').forEach(function(g){
-          expandedBrands.push(g.getAttribute('data-brand-name'));
-        });
-        document.querySelectorAll('.style-group.expanded').forEach(function(sg){
-          var nameEl = sg.querySelector('.sg-name');
-          if(nameEl) expandedStyles.push(nameEl.textContent.trim().split(' ')[0]);
-        });
         await syncFromBackend();
-        render();
-        // 重新展開原本展開的區塊
-        expandedBrands.forEach(function(name){
-          document.querySelectorAll('.brand-group').forEach(function(g){
-            if(g.getAttribute('data-brand-name') === name) g.classList.add('expanded');
-          });
-        });
-        expandedStyles.forEach(function(name){
-          document.querySelectorAll('.style-group').forEach(function(sg){
-            var nameEl = sg.querySelector('.sg-name');
-            if(nameEl && nameEl.textContent.trim().split(' ')[0] === name){
-              sg.classList.add('expanded');
-            }
-          });
-        });
+        render_keepExpanded(); // 記住目前展開的品牌跟型號，刷新後重新展開（不破壞使用者的操作狀態）
         showToast("明細已更新");
       }
 
@@ -2045,18 +2422,19 @@ function bindEvents(){
         var color = el.getAttribute('data-color');
         var size = el.getAttribute('data-size');
         // 不問指派,直接加入清單(認領制:之後有空的人自己填名字)
-        await markRecountRemote(style, color, size, "");
+        // 不 await：markRecountRemote 內部本地狀態已經樂觀更新過了，畫面立刻反映，網路請求在背景送出
+        markRecountRemote(style, color, size, "");
         showToast('已加入複盤清單');
-        render();
+        render_keepExpanded(); // 停留原畫面，不收合目前展開的品牌／型號
       }
 
       else if(action === 'unmark-recount'){
         var style = el.getAttribute('data-style');
         var color = el.getAttribute('data-color');
         var size = el.getAttribute('data-size');
-        await unmarkRecountRemote(style, color, size);
+        unmarkRecountRemote(style, color, size);
         showToast('已移除複盤標記');
-        render();
+        render_keepExpanded();
       }
 
       else if(action === 'recount-filter'){
@@ -2099,15 +2477,18 @@ function bindEvents(){
       }
 
       else if(action === 'jump-color'){
-        await persistCurrentInputs(); // 先存目前這格的資料
-        state.curColorIdx = Number(el.getAttribute('data-color-idx'));
-        state.curSizeIdx = 0;
-        render();
+        // 樂觀更新：畫面立刻換格，存檔在背景進行；但算式格式錯誤時擋下換格，留在原地讓使用者修正
+        if(persistCurrentInputs()){
+          state.curColorIdx = Number(el.getAttribute('data-color-idx'));
+          state.curSizeIdx = 0;
+          render();
+        }
       }
       else if(action === 'jump-size'){
-        await persistCurrentInputs();
-        state.curSizeIdx = Number(el.getAttribute('data-size-idx'));
-        render();
+        if(persistCurrentInputs()){
+          state.curSizeIdx = Number(el.getAttribute('data-size-idx'));
+          render();
+        }
       }
 
       else if(action === 'add-token'){
@@ -2147,12 +2528,20 @@ function bindEvents(){
       }
 
       else if(action === 'next-slot'){
-        await persistCurrentInputs();
-        advanceSlot(1);
+        if(persistCurrentInputs()){ advanceSlot(1); }
       }
       else if(action === 'prev-slot'){
-        await persistCurrentInputs();
-        advanceSlot(-1);
+        if(persistCurrentInputs()){ advanceSlot(-1); }
+      }
+
+      else if(action === 'retry-save'){
+        retryFailedSave(el.getAttribute('data-key'));
+      }
+      else if(action === 'dismiss-save-error'){
+        dismissFailedSave(el.getAttribute('data-key'));
+      }
+      else if(action === 'dismiss-validation-error'){
+        dismissValidationError(el.getAttribute('data-key'));
       }
 
       else if(action === 'bulk-import'){
@@ -2380,6 +2769,13 @@ function bindEvents(){
         }
       }
 
+      else if(action === 'toggle-rp-done'){
+        var rpWrap = el.closest('.rp-done-wrap');
+        if(rpWrap){
+          rpWrap.classList.toggle('expanded');
+        }
+      }
+
       else if(action === 'regenerate-sheets'){
         el.disabled = true;
         el.textContent = "更新中…";
@@ -2415,21 +2811,32 @@ function bindEvents(){
       if(t && t.classList && t.classList.contains('expr-newinput')){
         refreshSum();
       }
-      // 複盤算式輸入時，即時在輸入框下方顯示算出的合計
+      // 複盤算式輸入時，即時在輸入框下方顯示算出的合計；格式看不懂就顯示紅字提示，不要顯示誤導的數字
       if(t && t.classList && t.classList.contains('ri-input')){
         var raw = t.value.trim();
         var wrap = t.parentNode; // .ri-num
         var hint = wrap.querySelector('.ri-calc-hint');
-        var isExpr = /[+×xX*]/.test(raw);
-        if(isExpr && raw !== ""){
+        var err = raw !== "" ? validateExpr(raw) : null;
+        var isExpr = raw !== "" && /[+×xX*＊＋]/.test(raw);
+        if(err){
+          if(!hint){
+            hint = document.createElement('div');
+            hint.className = 'ri-calc-hint';
+            wrap.appendChild(hint);
+          }
+          hint.textContent = '⚠ 格式看不懂';
+          hint.classList.add('ri-calc-hint-error');
+        } else if(isExpr){
           if(!hint){
             hint = document.createElement('div');
             hint.className = 'ri-calc-hint';
             wrap.appendChild(hint);
           }
           hint.textContent = '= ' + parseExpr(raw);
+          hint.classList.remove('ri-calc-hint-error');
         } else if(hint){
           hint.textContent = "";
+          hint.classList.remove('ri-calc-hint-error');
         }
       }
     });
@@ -2440,16 +2847,26 @@ function bindEvents(){
       if(t && t.classList && t.classList.contains('expr-newinput')){
         persistCurrentInputs();
       }
-      // 複盤算式輸入框失焦時存檔並更新差異
+      // 複盤算式輸入框失焦時存檔並更新差異；格式錯誤就擋下不存，明確提示
       if(t && t.classList && t.classList.contains('ri-input')){
         var style = t.getAttribute('data-style');
         var color = t.getAttribute('data-color');
         var size = t.getAttribute('data-size');
         var val = t.value.trim(); // 直接存算式文字（如 "50+30"），對照時用 parseExpr 算
-        (async function(){
-          await saveRecountValueRemote(style, color, size, val);
-          if(state.view === "recount") render();
-        })();
+        var key = keyFor(style, color, size);
+        var err = validateExpr(val);
+        if(err){
+          showValidationError(key, style, color, size, "複盤欄位："+err);
+        } else {
+          clearValidationError(key);
+          (async function(){
+            await saveRecountValueRemote(style, color, size, val);
+            // 存檔是非同步的，如果使用者存檔送出後很快又點回某個複盤輸入框繼續改
+            // （例如發現剛打錯字要刪掉重打），這時候不能整頁重畫，
+            // 否則會把使用者正在編輯的輸入框整個換掉，造成「打字/刪除打到一半突然卡住」的狀況
+            if(state.view === "recount" && !isEditingRecountField()) render();
+          })();
+        }
       }
       // 認領人輸入框失焦時存名字(存進 assignee)
       if(t && t.classList && t.classList.contains('ri-claim-input')){
@@ -2459,7 +2876,7 @@ function bindEvents(){
         var cname = t.value.trim();
         (async function(){
           await markRecountRemote(cstyle, ccolor, csize, cname);
-          if(state.view === "recount") render();
+          if(state.view === "recount" && !isEditingRecountField()) render();
         })();
       }
     }, true); // 用 capture，因為 blur 不會冒泡
@@ -2675,9 +3092,12 @@ function deleteToken(field, idx){
 }
 
 // 把像 "65+65+96" 或 "12×6+8" 這種算式換算成總和，× 的運算優先於 +（例如 12×6+8 = 80）
+// 乘號同時接受 × * x X ＊，加號同時接受 + ＋（跟 tokenizeExpr 共用同一套正規化）。
+// 這個函式對無法解析的片段採寬鬆處理（跳過不計），純粹用來計算數字或即時預覽；
+// 真正要擋下格式錯誤、不讓它默默存成 0，請在存檔前先呼叫 validateExpr() 檢查。
 function parseExpr(str){
   if(str === null || str === undefined) return 0;
-  var s = String(str).trim().replace(/[xX]/g, "×"); // 容許用英文字母 x 代替 ×
+  var s = normalizeExprSymbols(str).replace(/\s+/g, "");
   if(s === "") return 0;
   var terms = s.split("+");
   var sum = 0;
@@ -2685,7 +3105,7 @@ function parseExpr(str){
     var factors = terms[i].split("×");
     var product = null;
     for(var j=0;j<factors.length;j++){
-      var n = parseFloat(factors[j].trim());
+      var n = parseFloat(factors[j]);
       if(isNaN(n)) continue;
       product = (product === null) ? n : product * n;
     }
@@ -2694,8 +3114,11 @@ function parseExpr(str){
   return sum;
 }
 
-async function persistCurrentInputs(){
-  if(state.view !== "counting") return;
+// 樂觀更新：把目前這格的輸入收進畫面並立刻更新，背景存檔不會擋住呼叫端的後續操作（例如換格）
+// 樂觀更新：把目前這格的輸入收進畫面並立刻更新，背景存檔不會擋住呼叫端的後續操作（例如換格）
+// 回傳 true = 可以放心換格／離開；回傳 false = 算式格式有誤，已擋下存檔，呼叫端不該繼續換格
+function persistCurrentInputs(){
+  if(state.view !== "counting") return true;
   // 先把兩個欄位「最後輸入框」尚未送出的數字收進算式
   // 傳 false = 不搶回焦點（這裡多半是使用者點了別的欄位觸發的，搶焦點會害他要點兩次）
   commitNewInput('shelf', false);
@@ -2706,11 +3129,25 @@ async function persistCurrentInputs(){
   var col = st.colors[state.curColorIdx];
   var size = col.sizes[state.curSizeIdx];
   var key = keyFor(st.style, col.name, size);
+
+  // 存檔前先驗證算式格式，看不懂的算式不能默默存成 0，要擋下來並明確提示
+  var shelfErr = validateExpr(shelfRaw);
+  var stockErr = validateExpr(stockRaw);
+  if(shelfErr || stockErr){
+    var msgParts = [];
+    if(shelfErr) msgParts.push("架上："+shelfErr);
+    if(stockErr) msgParts.push("庫存："+stockErr);
+    showValidationError(key, st.style, col.name, size, msgParts.join("；"));
+    return false;
+  }
+  clearValidationError(key);
+
   var existing = state.counts[key];
   // 兩格都空、而且之前也沒存過東西 → 略過（避免送出毫無意義的空白記錄）
   // 但若之前有存過東西、現在被清空 → 必須送出，把後端的舊值蓋掉
-  if(shelfRaw === "" && stockRaw === "" && !existing) return;
-  await saveCount(st.style, col.name, size, shelfRaw, stockRaw);
+  if(shelfRaw === "" && stockRaw === "" && !existing) return true;
+  saveCountOptimistic(st.style, col.name, size, shelfRaw, stockRaw);
+  return true;
 }
 
 function advanceSlot(dir){
