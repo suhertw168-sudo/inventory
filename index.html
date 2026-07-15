@@ -1905,6 +1905,66 @@ function isRecountFilled(r){
   return shelfFilled && stockFilled;
 }
 
+// 取得某個複盤 key（"款式|顏色|尺寸"）所屬的品牌名稱(沒品牌回傳空字串)
+// 跟 renderRecount() 內部的 brandOfKey 是同一套邏輯，這裡另外開一個全域版本給就地更新用
+function brandOfRecountKey(key){
+  var style = key.split("|")[0];
+  var g = findBrandGroupForStyle(style);
+  return (g && g.brand) ? g.brand : "";
+}
+
+// 就地更新單一複盤項目的「複盤加總」「差異」顯示，跟初盤 updateChipsInPlace() 同一套精神：
+// 輸入框 DOM 完全不動、不整頁重畫，手機鍵盤不會因為重畫而收起。
+// wasDone/isDoneNow 是這格「架上+庫存是否都已填」在這次修改前後的狀態，用來同步調整
+// 品牌標題那一行「（X/Y 已複盤）」的計數（只有跨越「完成/未完成」門檻時才需要調整）。
+function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
+  if(!itemEl) return;
+  var r = state.recounts[key];
+  if(!r) return;
+  var c = state.counts[key];
+  var firstShelf = c && c.shelf !== "" && c.shelf !== null && c.shelf !== undefined ? (Number(c.shelf)||0) : null;
+  var firstStock = c && c.stock !== "" && c.stock !== null && c.stock !== undefined ? (Number(c.stock)||0) : null;
+  var firstTotal = (firstShelf !== null || firstStock !== null) ? ((firstShelf||0)+(firstStock||0)) : null;
+
+  var shelfRaw = (r.shelf !== null && r.shelf !== undefined) ? String(r.shelf) : "";
+  var stockRaw = (r.stock !== null && r.stock !== undefined) ? String(r.stock) : "";
+  var recountVal = isDoneNow ? (parseExpr(shelfRaw) + parseExpr(stockRaw)) : null;
+
+  var diffHtml = "";
+  if(firstTotal !== null && recountVal !== null){
+    var diff = recountVal - firstTotal;
+    var diffColor = diff === 0 ? "#2f7a3e" : "#c0392b";
+    var diffText = diff === 0 ? "一致 ✓" : (diff > 0 ? "+"+diff : ""+diff);
+    diffHtml = '<span style="color:'+diffColor+'; font-weight:700;">'+diffText+'</span>';
+  } else if(recountVal === null){
+    diffHtml = '<span style="color:var(--muted);">待複盤</span>';
+  }
+
+  itemEl.classList.toggle('done', isDoneNow);
+  var totalEl = itemEl.querySelector('.ri-total-val');
+  if(totalEl) totalEl.textContent = (recountVal !== null ? recountVal : '—');
+  var diffEl = itemEl.querySelector('.ri-diff-val');
+  if(diffEl) diffEl.innerHTML = diffHtml;
+
+  // 這格從「未完成→完成」或「完成→未完成」時，順便把所屬品牌標題的計數 +1/-1（不用整段重算）
+  if(wasDone !== isDoneNow){
+    var brand = brandOfRecountKey(key);
+    if(brand){
+      var headEls = document.querySelectorAll('.recount-brand-head');
+      for(var i=0;i<headEls.length;i++){
+        if(headEls[i].getAttribute('data-brand') === brand){
+          var doneN = (parseInt(headEls[i].getAttribute('data-done'),10) || 0) + (isDoneNow ? 1 : -1);
+          var totalN = parseInt(headEls[i].getAttribute('data-total'),10) || 0;
+          headEls[i].setAttribute('data-done', doneN);
+          var countEl = headEls[i].querySelector('.rb-count');
+          if(countEl) countEl.textContent = '（'+doneN+'/'+totalN+' 已複盤）';
+          break;
+        }
+      }
+    }
+  }
+}
+
 // 依款式彙總複盤進度：只統計「有標記複盤格子」的款式。
 // 回傳 { 款式名: { total, done, missing:[{color,size},...] } }
 function computeRecountStyleProgress(){
@@ -2159,9 +2219,9 @@ function renderRecount(){
       '<div class="ri-nums">'+
         '<div class="ri-num"><div class="ri-num-label">第一次</div><div class="ri-num-val">'+(firstTotal!==null?firstTotal:'—')+'</div></div>'+
         '<div class="ri-arrow">→</div>'+
-        '<div class="ri-num"><div class="ri-num-label">複盤加總</div><div class="ri-num-val">'+(recountVal!==null?recountVal:'—')+'</div></div>'+
+        '<div class="ri-num"><div class="ri-num-label">複盤加總</div><div class="ri-num-val ri-total-val">'+(recountVal!==null?recountVal:'—')+'</div></div>'+
         '<div class="ri-arrow">=</div>'+
-        '<div class="ri-num"><div class="ri-num-label">差異</div><div class="ri-num-val">'+diffHtml+'</div></div>'+
+        '<div class="ri-num"><div class="ri-num-label">差異</div><div class="ri-num-val ri-diff-val">'+diffHtml+'</div></div>'+
       '</div>'+
       '<div class="ri-fields">'+
         '<div class="ri-num"><div class="ri-num-label">架上（可加可乘）</div>'+
@@ -2228,8 +2288,8 @@ function renderRecount(){
       var doneN = byBrand[b].filter(function(k){
         return isRecountFilled(state.recounts[k]);
       }).length;
-      rowsHtml += '<div class="recount-brand-head">'+escapeHtml(b)+
-        ' <span style="font-weight:600; color:var(--muted); font-size:12px;">（'+doneN+'/'+total+' 已複盤）</span></div>';
+      rowsHtml += '<div class="recount-brand-head" data-brand="'+escapeHtml(b)+'" data-done="'+doneN+'" data-total="'+total+'">'+escapeHtml(b)+
+        ' <span class="rb-count" style="font-weight:600; color:var(--muted); font-size:12px;">（'+doneN+'/'+total+' 已複盤）</span></div>';
       byBrand[b].forEach(function(k){ rowsHtml += buildRecountItem(k); });
     });
   }
@@ -3010,32 +3070,32 @@ function bindEvents(){
         var size = t.getAttribute('data-size');
         var field = t.getAttribute('data-field'); // "shelf" 或 "stock"
         var val = t.value.trim(); // 直接存算式文字（如 "50+30"），對照時用 parseExpr 算
-        var key = keyFor(style, color, size) + "::" + field;
+        var recountKey = keyFor(style, color, size);
+        var errKey = recountKey + "::" + field;
         var err = validateExpr(val);
         if(err){
-          showValidationError(key, style, color, size, "複盤欄位（"+(field==='shelf'?'架上':'庫存')+"）："+err);
+          showValidationError(errKey, style, color, size, "複盤欄位（"+(field==='shelf'?'架上':'庫存')+"）："+err);
         } else {
-          clearValidationError(key);
-          // 樂觀更新：saveRecountValueRemote 內部會同步先把 state.recounts 更新好，
-          // 才去背景送出 apiPost，所以這裡不 await 它，本地差異比對可以立刻算出來顯示，
-          // 不用等後端存檔的網路來回才跳出來（存檔照樣在背景進行，失敗會另外 toast 提示）。
+          clearValidationError(errKey);
+          // 樂觀更新＋就地更新畫面：跟初盤 updateChipsInPlace() 同一套精神，不整頁重畫，
+          // 輸入框 DOM 完全不動，手機鍵盤在輸入框之間切換時不會被重畫打斷而收起。
+          var wasDone = isRecountFilled(state.recounts[recountKey]);
+          // saveRecountValueRemote 內部會同步先把 state.recounts 更新好，才去背景送出 apiPost，
+          // 這裡不 await 它，本地差異比對可以立刻算出來顯示，不用等後端存檔的網路來回
+          // （存檔照樣在背景進行，失敗會另外 toast 提示）。
           saveRecountValueRemote(style, color, size, field, val);
-          // 如果使用者很快又點回某個複盤輸入框繼續改（例如發現剛打錯字要刪掉重打），
-          // 這時候不能整頁重畫，否則會把使用者正在編輯的輸入框整個換掉，
-          // 造成「打字/刪除打到一半突然卡住」的狀況
-          if(state.view === "recount" && !isEditingRecountField()) render();
+          var isDoneNow = isRecountFilled(state.recounts[recountKey]);
+          patchRecountItemDisplay(t.closest('.recount-item'), recountKey, wasDone, isDoneNow);
         }
       }
-      // 複盤備註輸入框失焦時存檔；純文字，選填，不做算式驗證
+      // 複盤備註輸入框失焦時存檔；純文字，選填，不做算式驗證，也不影響差異比對或完成進度，
+      // 畫面上沒有其他地方需要跟著變，所以直接背景存檔、不重畫（輸入框 DOM 不動，鍵盤不收起）。
       if(t && t.classList && t.classList.contains('ri-note-input')){
         var nstyle = t.getAttribute('data-style');
         var ncolor = t.getAttribute('data-color');
         var nsize = t.getAttribute('data-size');
         var nval = t.value.trim();
-        (async function(){
-          await saveRecountNoteRemote(nstyle, ncolor, nsize, nval);
-          if(state.view === "recount" && !isEditingRecountField()) render();
-        })();
+        saveRecountNoteRemote(nstyle, ncolor, nsize, nval);
       }
       // 認領人輸入框失焦時存名字(存進 assignee)
       if(t && t.classList && t.classList.contains('ri-claim-input')){
