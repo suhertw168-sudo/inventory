@@ -1337,13 +1337,13 @@ function renderHome(){
     '</div>'+
   '</div>'+
   '<main>'+
+    '<button class="btn secondary" data-action="goto-summary">查看彙總 / 匯出貼回 Sheet</button>'+
+    recountEntryHtml+
     '<div class="panel">'+
       '<h2>選擇品牌</h2>'+
       '<p class="sub">點品牌進入選型號，再逐色逐尺寸填寫，資料即時同步，多人可同時進行不同款式或顏色。</p>'+
       (rows || emptyStateHtml('還沒有設定款式', '請管理人員到「管理用設定」加入款式、顏色與尺寸'))+
     '</div>'+
-    '<button class="btn secondary" data-action="goto-summary">查看彙總 / 匯出貼回 Sheet</button>'+
-    recountEntryHtml+
   '</main>'+
   '<div class="footer-note">填寫的數字會即時存到雲端，所有人共用同一份資料</div>';
 }
@@ -1866,16 +1866,6 @@ function renderSummary(){
   '</div>'+
   '<main>'+
     '<div class="panel">'+
-      '<h2>更新 Google Sheet 彙總分頁</h2>'+
-      '<p class="sub">會在你的 Google Sheet 裡自動產生「彙總_款式名稱」分頁（不會動到原本既有的分頁），每個品項一個分頁，內容是該品項所有顏色、尺寸的架上／庫存／加總明細與總計。需要重新整理 Sheet 才會看到新分頁。</p>'+
-      '<button class="btn" data-action="regenerate-sheets">更新 Google Sheet 彙總分頁</button>'+
-    '</div>'+
-    '<div class="panel">'+
-      '<h2>備用：下載 Excel 快照</h2>'+
-      '<p class="sub">如果想要一份獨立的 Excel 檔（不在 Google Sheet 裡），可以用這個，結構跟上面的彙總分頁一樣。</p>'+
-      '<button class="btn secondary" data-action="download-xlsx">下載 Excel（.xlsx）</button>'+
-    '</div>'+
-    '<div class="panel">'+
       '<h2>匯出 ERP 匯入格式（品號／數量／倉別）</h2>'+
       '<p class="sub">選一個款式，匯出成 ERP 可匯入的格式。品號會自動組成（如 101-01#XS），數量用第一次盤點的架上+庫存加總，倉別依款式自動帶入（AG1000/2000/3000、TH 系列為 A02，其餘 A01）。只匯出有盤過的格。</p>'+
       '<div class="field">'+
@@ -1890,6 +1880,16 @@ function renderSummary(){
         (grandMissing > 0 ? ' · <strong style="color:#e87a3e;">尚有 '+grandMissing+' 筆未輸入</strong>' : ' · <strong style="color:#2f7a3e;">已全部輸入完成 ✓</strong>')+
       '</p>'+
       groupsHtml+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>更新 Google Sheet 彙總分頁</h2>'+
+      '<p class="sub">會在你的 Google Sheet 裡自動產生「彙總_款式名稱」分頁（不會動到原本既有的分頁），每個品項一個分頁，內容是該品項所有顏色、尺寸的架上／庫存／加總明細與總計。需要重新整理 Sheet 才會看到新分頁。</p>'+
+      '<button class="btn" data-action="regenerate-sheets">更新 Google Sheet 彙總分頁</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>備用：下載 Excel 快照</h2>'+
+      '<p class="sub">如果想要一份獨立的 Excel 檔（不在 Google Sheet 裡），可以用這個，結構跟上面的彙總分頁一樣。</p>'+
+      '<button class="btn secondary" data-action="download-xlsx">下載 Excel（.xlsx）</button>'+
     '</div>'+
   '</main>'+
   '<div id="tsv-data" style="display:none;">'+escapeHtml(tsvLines.join("\n"))+'</div>';
