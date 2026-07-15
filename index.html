@@ -364,17 +364,24 @@
   }
   .recount-item .ri-calc-hint.ri-calc-hint-error{ color:#c0392b; }
   .recount-item .ri-actions{ margin-top:10px; text-align:right; }
+  .recount-item .ri-fields{
+    display:grid; grid-template-columns:1fr 1fr; gap:10px;
+    margin-top:12px; padding-top:12px; border-top:1px solid var(--line);
+  }
+  .recount-item .ri-note{
+    margin-top:12px; display:flex; align-items:center; gap:6px;
+  }
   .recount-item .ri-claim{
     margin-top:12px; padding-top:12px; border-top:1px solid var(--line);
     display:flex; align-items:center; gap:6px;
   }
   .recount-item .ri-claim-label{ font-size:13px; color:var(--muted); font-weight:700; flex:0 0 auto; }
-  .recount-item .ri-claim-input{
+  .recount-item .ri-claim-input, .recount-item .ri-note-input{
     flex:1; font-size:14px; padding:8px 10px;
     border:1.5px solid var(--line); border-radius:8px;
     font-family:inherit; color:var(--ink); background:#fff; min-width:0;
   }
-  .recount-item .ri-claim-input:focus{ outline:none; border-color:var(--accent); }
+  .recount-item .ri-claim-input:focus, .recount-item .ri-note-input:focus{ outline:none; border-color:var(--accent); }
   .recount-brand-head{
     font-size:15px; font-weight:800; color:var(--accent-deep);
     padding:10px 0 8px; margin-top:6px;
@@ -436,6 +443,8 @@
     transition:transform 0.18s ease;
   }
   .brand-group.expanded .bg-arrow{ transform:rotate(90deg); }
+  /* 彙總明細頁：型號列標題右側「認領按鈕 + 展開箭頭」放一起，共用給品牌標題跟型號標題 */
+  .hdr-right{ display:flex; align-items:center; gap:8px; flex:0 0 auto; }
   .brand-group-body{
     display:none;
     padding:0 12px 12px;
@@ -531,10 +540,11 @@ var ADMIN_PASSWORD = "6666";
 var state = {
   structure: null,
   counts: {},           // key "style|color|size" -> {shelf, stock}
-  recounts: {},         // key "style|color|size" -> {recount, assignee, markedAt} 複盤任務
+  recounts: {},         // key "style|color|size" -> {shelf, stock, note, assignee, markedAt} 複盤任務
   recountFilter: "",    // 複盤清單的認領人篩選（空=全部）
   recountBrandFilter: "", // 複盤清單的品牌篩選（空=全部）
-  view: "home",         // home | brandModels | setup | counting | summary | recount
+  claims: {},            // key 型號名稱 -> true（已認領，避免多人同時把同一型號登入ERP）。沒有這個 key = 未認領
+  view: "home",         // home | brandModels | setup | counting | summary | recount | claims
   curBrandName: "",
   curStyleIdx: 0,
   curColorIdx: 0,
@@ -747,7 +757,13 @@ async function markRecountRemote(style, color, size, assignee){
   var key = keyFor(style, color, size);
   // 本地先更新(樂觀更新)
   var existing = state.recounts[key] || {};
-  state.recounts[key] = { recount: existing.recount !== undefined ? existing.recount : "", assignee: assignee || "", markedAt: existing.markedAt || "" };
+  state.recounts[key] = {
+    shelf: existing.shelf !== undefined ? existing.shelf : "",
+    stock: existing.stock !== undefined ? existing.stock : "",
+    note: existing.note !== undefined ? existing.note : "",
+    assignee: assignee || "",
+    markedAt: existing.markedAt || ""
+  };
   try{
     await apiPost({ action:"markRecount", style:style, color:color, size:size, assignee:assignee || "" });
   }catch(e){ console.error("mark recount failed", e); showToast("標記失敗，請檢查網路"); }
@@ -759,14 +775,25 @@ async function unmarkRecountRemote(style, color, size){
     await apiPost({ action:"unmarkRecount", style:style, color:color, size:size });
   }catch(e){ console.error("unmark recount failed", e); showToast("取消失敗，請檢查網路"); }
 }
-async function saveRecountValueRemote(style, color, size, recount){
+// field 為 "shelf" 或 "stock"，value 是算式文字（如 "50+30"），跟第一次盤點的欄位是同一套規則
+async function saveRecountValueRemote(style, color, size, field, value){
   var key = keyFor(style, color, size);
-  var existing = state.recounts[key] || {assignee:"", markedAt:""};
-  existing.recount = recount;
+  var existing = state.recounts[key] || {shelf:"", stock:"", note:"", assignee:"", markedAt:""};
+  existing[field] = value;
   state.recounts[key] = existing;
   try{
-    await apiPost({ action:"saveRecountValue", style:style, color:color, size:size, recount:recount });
+    await apiPost({ action:"saveRecountValue", style:style, color:color, size:size, field:field, value:value });
   }catch(e){ console.error("save recount value failed", e); showToast("儲存失敗，請檢查網路"); }
+}
+// 複盤備註：選填，不影響複盤完成進度的計算
+async function saveRecountNoteRemote(style, color, size, note){
+  var key = keyFor(style, color, size);
+  var existing = state.recounts[key] || {shelf:"", stock:"", note:"", assignee:"", markedAt:""};
+  existing.note = note;
+  state.recounts[key] = existing;
+  try{
+    await apiPost({ action:"saveRecountNote", style:style, color:color, size:size, note:note });
+  }catch(e){ console.error("save recount note failed", e); showToast("儲存失敗，請檢查網路"); }
 }
 async function clearRecountsRemote(){
   try{
@@ -779,6 +806,28 @@ async function regenerateSummarySheetsRemote(){
     await apiPost({ action:"regenerate" });
     return true;
   }catch(e){ console.error("regenerate failed", e); showToast("更新彙總分頁失敗，請檢查網路"); return false; }
+}
+
+// ---------- 型號認領 API ----------
+// 認領單位是「型號」層級(不分顏色尺寸)，只為了避免多人同時把同一型號登入 ERP 而撞到，
+// 不需要記是誰認領、也不需要記時間，跟複盤標記一樣用「有沒有存在」表示狀態。
+async function claimStyleRemote(style){
+  state.claims[style] = true; // 本地先更新(樂觀更新)
+  try{
+    await apiPost({ action:"claimStyle", style:style });
+  }catch(e){ console.error("claim style failed", e); showToast("認領失敗，請檢查網路"); }
+}
+async function unclaimStyleRemote(style){
+  delete state.claims[style];
+  try{
+    await apiPost({ action:"unclaimStyle", style:style });
+  }catch(e){ console.error("unclaim style failed", e); showToast("取消認領失敗，請檢查網路"); }
+}
+async function clearClaimsRemote(){
+  try{
+    await apiPost({ action:"clearClaims" });
+    state.claims = {};
+  }catch(e){ console.error("clear claims failed", e); showToast("清空失敗，請檢查網路"); }
 }
 
 // ---------- Init ----------
@@ -932,6 +981,7 @@ async function init(){
       counts = all.counts || {};
       if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
       if(all.recounts){ state.recounts = all.recounts; }
+      if(all.claims){ state.claims = all.claims; }
     } else {
       fetchFailed = true;
     }
@@ -1045,6 +1095,7 @@ async function syncFromBackend(){
     if(!all || !Array.isArray(all.structure)) return;
     if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
     if(all.recounts){ state.recounts = all.recounts; }
+    if(all.claims){ state.claims = all.claims; }
 
     // 比對：跟目前的 state 比，看資料有沒有真的變動（避免無謂的「有新資料」提示）
     var newStructure = normalizeStructure(all.structure);
@@ -1183,7 +1234,7 @@ function render(){
 // 造成打字打到一半、或按刪除鍵時畫面突然被重置的狀況。
 function isEditingRecountField(){
   var active = document.activeElement;
-  return !!(active && active.classList && (active.classList.contains('ri-input') || active.classList.contains('ri-claim-input')));
+  return !!(active && active.classList && (active.classList.contains('ri-input') || active.classList.contains('ri-claim-input') || active.classList.contains('ri-note-input')));
 }
 
 // 摘要頁重畫前先記住目前展開的品牌／型號分組，重畫後再展開回來，
@@ -1463,8 +1514,13 @@ function renderSetup(){
     '</div>'+
     '<div class="panel">'+
       '<h2>清除全部資料</h2>'+
-      '<p class="sub">會清空所有人已輸入的盤點數字（款式結構不受影響）。請小心使用。</p>'+
+      '<p class="sub">下面三顆各自獨立，只會清掉自己那一種資料，不會互相影響。請小心使用，動作都無法復原。</p>'+
+      '<p class="sub" style="margin-top:14px;">會清空所有人已輸入的盤點數字（款式結構不受影響）。</p>'+
       '<button class="btn secondary" data-action="clear-counts" style="color:var(--accent-deep);border-color:var(--accent-deep)">清空所有盤點數字</button>'+
+      '<p class="sub" style="margin-top:14px;">會清空整個複盤清單（複盤標記、已填的架上/庫存複盤數字跟備註），不影響第一次盤點的數字。</p>'+
+      '<button class="btn secondary" data-action="clear-recounts" style="color:var(--accent-deep);border-color:var(--accent-deep); margin-top:6px;">清空所有複盤任務</button>'+
+      '<p class="sub" style="margin-top:14px;">會把所有型號的認領狀態變回「未認領」，不影響盤點數字或複盤任務。</p>'+
+      '<button class="btn secondary" data-action="clear-claims" style="color:var(--accent-deep);border-color:var(--accent-deep); margin-top:6px;">清空所有型號認領</button>'+
     '</div>'+
   '</main>';
 }
@@ -1712,6 +1768,10 @@ function renderSummary(){
     return t;
   }
 
+  // 型號認領進度：品牌層級「已完成」判定用，key 是品牌名稱("" = 未分組)
+  var claimProgressByBrand = {};
+  computeClaimBrandProgress().forEach(function(cg){ claimProgressByBrand[cg.brand] = cg; });
+
   // 依動態計算的品牌分組組裝畫面（從 state.structure 即時算出）
   var groupsHtml = "";
   var grandMissing = 0;
@@ -1735,13 +1795,17 @@ function renderSummary(){
         // 品牌底下多個型號：每個型號做成可摺疊的小卡片
         var styleMissingTag = built.missing > 0 ? ' <span style="background:#e87a3e; color:#fff; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">未輸入 '+built.missing+'</span>' : '';
         var styleTotalText = ' · 合計 '+built.total;
+        var styleClaimed = !!state.claims[st.style];
         bodyHtml += '<div class="style-group'+(built.missing > 0 ? ' has-missing' : '')+'">'+
           '<div class="style-group-header" data-action="toggle-style-group">'+
             '<div class="sg-left">'+
               '<div class="sg-name">'+escapeHtml(st.style)+styleMissingTag+'</div>'+
               '<div class="sg-meta">'+st.colors.length+' 色'+styleTotalText+'</div>'+
             '</div>'+
-            '<div class="sg-arrow">›</div>'+
+            '<div class="hdr-right">'+
+              '<button class="mini-btn'+(styleClaimed?' marked':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(st.style)+'">'+(styleClaimed?'✓ 已認領':'未認領')+'</button>'+
+              '<div class="sg-arrow">›</div>'+
+            '</div>'+
           '</div>'+
           '<div class="style-group-body">'+built.html+'</div>'+
         '</div>';
@@ -1756,16 +1820,29 @@ function renderSummary(){
     if(g.brand !== null) metaParts.push(styleCount + ' 個型號');
     if(groupMissing > 0) metaParts.push('<span style="color:#e87a3e; font-weight:700;">未輸入 '+groupMissing+' 筆</span>');
     var metaText = metaParts.join(' · ');
+    // 沒有品牌分組的獨立款式：這一層 brand-group 其實就代表單一型號，所以認領按鈕放在這裡；
+    // 有品牌分組的話，認領按鈕已經放在上面每個型號各自的 style-group-header 裡，這裡不重複放
+    var groupClaimBtnHtml = g.brand === null
+      ? (function(){ var c = !!state.claims[groupName]; return '<button class="mini-btn'+(c?' marked':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(groupName)+'">'+(c?'✓ 已認領':'未認領')+'</button>'; })()
+      : '';
+    // 品牌層「已完成」標籤：只有真的有品牌分組(底下不只一個型號)才顯示，判定沿用 computeClaimBrandProgress
+    // (跟原本認領總覽頁用的同一套邏輯)——品牌底下所有型號都認領了才算完成
+    var brandClaimProgress = g.brand !== null ? claimProgressByBrand[g.brand] : null;
+    var brandAllClaimed = !!(brandClaimProgress && brandClaimProgress.totalCount > 0 && brandClaimProgress.doneCount === brandClaimProgress.totalCount);
+    var brandClaimTag = brandAllClaimed
+      ? ' <span style="background:#2f7a3e; color:#fff; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">✅ 已完成</span>'
+      : '';
     groupsHtml += '<div class="brand-group'+(groupMissing > 0 ? ' has-missing' : '')+'" data-brand-name="'+escapeHtml(groupName)+'">'+
       '<div class="brand-group-header" data-action="toggle-brand-group">'+
         '<div class="bg-left">'+
           '<div>'+
-            '<div class="bg-name">'+escapeHtml(groupName)+'</div>'+
+            '<div class="bg-name">'+escapeHtml(groupName)+brandClaimTag+'</div>'+
             (metaText ? '<div class="bg-meta">'+metaText+'</div>' : '')+
           '</div>'+
         '</div>'+
-        '<div style="display:flex; align-items:center; gap:6px;">'+
+        '<div class="hdr-right">'+
           '<div class="bg-totals">合計 '+groupTotal+'</div>'+
+          groupClaimBtnHtml+
           '<div class="bg-arrow">›</div>'+
         '</div>'+
       '</div>'+
@@ -1819,10 +1896,13 @@ function renderSummary(){
 }
 
 // ---------- 複盤進度總覽（依品牌/款式彙總，只讀 state，不影響複盤存檔/樂觀更新/自動同步） ----------
-// 複盤是否已填：跟 buildRecountItem 裡既有判斷式邏輯一致（檢查字串是否為空，不是檢查數值），
-// 這裡獨立成一個函式給進度總覽用，不會去改動既有那幾處判斷式。
-function isRecountFilled(recountRaw){
-  return recountRaw !== null && recountRaw !== undefined && String(recountRaw).trim() !== "";
+// 複盤是否已填完成：架上、庫存兩格都要填才算完成（跟第一次盤點的完成判斷邏輯一致），
+// 備註欄不算在內——沒填備註不影響完成進度。
+function isRecountFilled(r){
+  if(!r) return false;
+  var shelfFilled = r.shelf !== null && r.shelf !== undefined && String(r.shelf).trim() !== "";
+  var stockFilled = r.stock !== null && r.stock !== undefined && String(r.stock).trim() !== "";
+  return shelfFilled && stockFilled;
 }
 
 // 依款式彙總複盤進度：只統計「有標記複盤格子」的款式。
@@ -1835,7 +1915,7 @@ function computeRecountStyleProgress(){
     if(!byStyle[style]) byStyle[style] = { total:0, done:0, missing:[] };
     var entry = byStyle[style];
     entry.total++;
-    if(isRecountFilled(state.recounts[key].recount)){ entry.done++; }
+    if(isRecountFilled(state.recounts[key])){ entry.done++; }
     else { entry.missing.push({color:color, size:size}); }
   });
   return byStyle;
@@ -1944,6 +2024,39 @@ function renderRecountProgressOverview(){
   '</div>';
 }
 
+// ---------- 型號認領進度判定（依品牌彙總「型號」層級的認領情形，避免多人同時把同一型號登入 ERP） ----------
+// 給彙總明細頁的品牌標題用：品牌底下所有型號都認領了才算該品牌「已完成」。
+// 沒有獨立的認領總覽頁面，這個判定函式直接接到 renderSummary 的品牌標題層。
+function computeClaimBrandProgress(){
+  var groups = computeBrandGroups(); // [{brand: 名稱或null, styles:[型號名稱,...]}, ...]
+  var byBrand = {}; // 品牌標籤("" = 未分組) -> [型號名稱,...]
+  groups.forEach(function(g){
+    var label = g.brand || "";
+    if(!byBrand[label]) byBrand[label] = [];
+    g.styles.forEach(function(s){
+      if(findStyleIdx(s) === -1) return; // 型號還沒建立在結構裡，跳過
+      byBrand[label].push(s);
+    });
+  });
+  var orderMap = {};
+  BRAND_ORDER.forEach(function(name, idx){ orderMap[name] = idx; });
+  var brandNames = Object.keys(byBrand).filter(function(b){ return b !== ""; }).sort(function(a,b){
+    var ai = orderMap.hasOwnProperty(a) ? orderMap[a] : 9999;
+    var bi = orderMap.hasOwnProperty(b) ? orderMap[b] : 9999;
+    if(ai !== bi) return ai - bi;
+    return a.localeCompare(b, 'zh-Hant');
+  });
+  var result = [];
+  if(byBrand[""] && byBrand[""].length > 0) result.push({ brand:"", styles: byBrand[""] });
+  brandNames.forEach(function(b){ if(byBrand[b].length > 0) result.push({ brand:b, styles: byBrand[b] }); });
+  result.forEach(function(g){
+    g.doneCount = g.styles.filter(function(s){ return !!state.claims[s]; }).length;
+    g.totalCount = g.styles.length;
+  });
+  return result;
+}
+
+
 // ---------- 複盤清單畫面 ----------
 function renderRecount(){
   var keys = Object.keys(state.recounts || {});
@@ -2015,9 +2128,17 @@ function renderRecount(){
     var firstShelf = c && c.shelf !== "" && c.shelf !== null && c.shelf !== undefined ? (Number(c.shelf)||0) : null;
     var firstStock = c && c.stock !== "" && c.stock !== null && c.stock !== undefined ? (Number(c.stock)||0) : null;
     var firstTotal = (firstShelf !== null || firstStock !== null) ? ((firstShelf||0)+(firstStock||0)) : null;
-    var recountRaw = (r.recount !== null && r.recount !== undefined) ? String(r.recount) : "";
-    var hasRecount = recountRaw.trim() !== "";
-    var recountVal = hasRecount ? parseExpr(recountRaw) : null;
+
+    var shelfRaw = (r.shelf !== null && r.shelf !== undefined) ? String(r.shelf) : "";
+    var stockRaw = (r.stock !== null && r.stock !== undefined) ? String(r.stock) : "";
+    var noteRaw = (r.note !== null && r.note !== undefined) ? String(r.note) : "";
+    var shelfFilled = shelfRaw.trim() !== "";
+    var stockFilled = stockRaw.trim() !== "";
+    var recountShelfVal = shelfFilled ? parseExpr(shelfRaw) : null;
+    var recountStockVal = stockFilled ? parseExpr(stockRaw) : null;
+    // 兩格都填了才算複盤完成，跟第一次盤點的完成判斷邏輯一致；備註不算在內
+    var recountVal = (shelfFilled && stockFilled) ? (recountShelfVal + recountStockVal) : null;
+
     var diffHtml = "";
     if(firstTotal !== null && recountVal !== null){
       var diff = recountVal - firstTotal;
@@ -2027,9 +2148,9 @@ function renderRecount(){
     } else if(recountVal === null){
       diffHtml = '<span style="color:var(--muted);">待複盤</span>';
     }
-    var recountCalcHint = (hasRecount && /[+×xX*＊＋]/.test(recountRaw))
-      ? '<div class="ri-calc-hint">= '+recountVal+'</div>'
-      : '';
+    var shelfCalcHint = (shelfFilled && /[+×xX*＊＋]/.test(shelfRaw)) ? '<div class="ri-calc-hint">= '+recountShelfVal+'</div>' : '';
+    var stockCalcHint = (stockFilled && /[+×xX*＊＋]/.test(stockRaw)) ? '<div class="ri-calc-hint">= '+recountStockVal+'</div>' : '';
+
     return '<div class="recount-item'+(recountVal!==null?' done':'')+'">'+
       '<div class="ri-top">'+
         '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+'</div>'+
@@ -2038,11 +2159,24 @@ function renderRecount(){
       '<div class="ri-nums">'+
         '<div class="ri-num"><div class="ri-num-label">第一次</div><div class="ri-num-val">'+(firstTotal!==null?firstTotal:'—')+'</div></div>'+
         '<div class="ri-arrow">→</div>'+
-        '<div class="ri-num"><div class="ri-num-label">複盤（可加可乘）</div>'+
-          '<input class="ri-input" type="text" inputmode="text" value="'+escapeHtml(recountRaw)+'" placeholder="如 50+30" '+
-            'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-action="recount-input">'+
-          recountCalcHint+'</div>'+
+        '<div class="ri-num"><div class="ri-num-label">複盤加總</div><div class="ri-num-val">'+(recountVal!==null?recountVal:'—')+'</div></div>'+
+        '<div class="ri-arrow">=</div>'+
         '<div class="ri-num"><div class="ri-num-label">差異</div><div class="ri-num-val">'+diffHtml+'</div></div>'+
+      '</div>'+
+      '<div class="ri-fields">'+
+        '<div class="ri-num"><div class="ri-num-label">架上（可加可乘）</div>'+
+          '<input class="ri-input" type="text" inputmode="text" value="'+escapeHtml(shelfRaw)+'" placeholder="如 50+30" '+
+            'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-field="shelf" data-action="recount-input">'+
+          shelfCalcHint+'</div>'+
+        '<div class="ri-num"><div class="ri-num-label">庫存（可加可乘）</div>'+
+          '<input class="ri-input" type="text" inputmode="text" value="'+escapeHtml(stockRaw)+'" placeholder="如 50+30" '+
+            'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-field="stock" data-action="recount-input">'+
+          stockCalcHint+'</div>'+
+      '</div>'+
+      '<div class="ri-note">'+
+        '<span class="ri-claim-label">備註：</span>'+
+        '<input class="ri-note-input" type="text" value="'+escapeHtml(noteRaw)+'" placeholder="" '+
+          'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-action="recount-note">'+
       '</div>'+
       '<div class="ri-claim">'+
         '<span class="ri-claim-label">複盤人：</span>'+
@@ -2092,8 +2226,7 @@ function renderRecount(){
       // 這個品牌有幾筆、幾筆已複盤
       var total = byBrand[b].length;
       var doneN = byBrand[b].filter(function(k){
-        var rc = state.recounts[k].recount;
-        return rc !== "" && rc !== null && rc !== undefined && String(rc).trim() !== "";
+        return isRecountFilled(state.recounts[k]);
       }).length;
       rowsHtml += '<div class="recount-brand-head">'+escapeHtml(b)+
         ' <span style="font-weight:600; color:var(--muted); font-size:12px;">（'+doneN+'/'+total+' 已複盤）</span></div>';
@@ -2111,7 +2244,7 @@ function renderRecount(){
     renderRecountProgressOverview()+
     '<div class="panel">'+
       '<h2>複盤清單</h2>'+
-      '<p class="sub">共 '+keys.length+' 筆。填入複盤重數的數字（可加可乘），會自動跟第一次盤點的加總對照差異。多人可分工複盤不同格，各自填自己的複盤人。</p>'+
+      '<p class="sub">共 '+keys.length+' 筆。填入架上、庫存的複盤數字（都可以加可以乘），兩格都填了會自動跟第一次盤點的加總對照差異。備註為選填，沒填不影響完成進度。多人可分工複盤不同格，各自填自己的複盤人。</p>'+
       '<div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px;">依品牌篩選</div>'+
       '<div class="chip-strip" style="margin-bottom:12px;">'+brandFilterBtns+'</div>'+
       '<div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px;">依複盤人篩選</div>'+
@@ -2416,6 +2549,20 @@ function bindEvents(){
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
 
       else if(action === 'goto-recount'){ state.view = "recount"; state.recountFilter = ""; state.recountBrandFilter = ""; render(); }
+
+      else if(action === 'toggle-claim'){
+        var claimStyleName = el.getAttribute('data-style');
+        if(state.claims[claimStyleName]){
+          unclaimStyleRemote(claimStyleName);
+          showToast('已取消認領「'+claimStyleName+'」');
+        } else {
+          claimStyleRemote(claimStyleName);
+          showToast('已認領「'+claimStyleName+'」');
+        }
+        // 用 render_keepExpanded：認領按鈕現在放在彙總明細頁的品牌/型號摺疊區塊裡，
+        // 點認領不該把使用者原本展開看的明細收合掉
+        render_keepExpanded();
+      }
 
       else if(action === 'mark-recount'){
         var style = el.getAttribute('data-style');
@@ -2746,6 +2893,15 @@ function bindEvents(){
         render();
       }
 
+      else if(action === 'clear-claims'){
+        if(!confirm('⚠️ 確定要清空所有型號認領嗎？\n\n這會把所有型號的認領狀態變回「未認領」（不影響盤點數字或複盤任務）。此動作無法復原。')){
+          return;
+        }
+        await clearClaimsRemote();
+        showToast("已清空所有型號認領");
+        render();
+      }
+
       else if(action === 'download-xlsx'){
         downloadWorkbook();
       }
@@ -2847,26 +3003,39 @@ function bindEvents(){
       if(t && t.classList && t.classList.contains('expr-newinput')){
         persistCurrentInputs();
       }
-      // 複盤算式輸入框失焦時存檔並更新差異；格式錯誤就擋下不存，明確提示
+      // 複盤算式輸入框（架上／庫存）失焦時存檔並更新差異；格式錯誤就擋下不存，明確提示
       if(t && t.classList && t.classList.contains('ri-input')){
         var style = t.getAttribute('data-style');
         var color = t.getAttribute('data-color');
         var size = t.getAttribute('data-size');
+        var field = t.getAttribute('data-field'); // "shelf" 或 "stock"
         var val = t.value.trim(); // 直接存算式文字（如 "50+30"），對照時用 parseExpr 算
-        var key = keyFor(style, color, size);
+        var key = keyFor(style, color, size) + "::" + field;
         var err = validateExpr(val);
         if(err){
-          showValidationError(key, style, color, size, "複盤欄位："+err);
+          showValidationError(key, style, color, size, "複盤欄位（"+(field==='shelf'?'架上':'庫存')+"）："+err);
         } else {
           clearValidationError(key);
-          (async function(){
-            await saveRecountValueRemote(style, color, size, val);
-            // 存檔是非同步的，如果使用者存檔送出後很快又點回某個複盤輸入框繼續改
-            // （例如發現剛打錯字要刪掉重打），這時候不能整頁重畫，
-            // 否則會把使用者正在編輯的輸入框整個換掉，造成「打字/刪除打到一半突然卡住」的狀況
-            if(state.view === "recount" && !isEditingRecountField()) render();
-          })();
+          // 樂觀更新：saveRecountValueRemote 內部會同步先把 state.recounts 更新好，
+          // 才去背景送出 apiPost，所以這裡不 await 它，本地差異比對可以立刻算出來顯示，
+          // 不用等後端存檔的網路來回才跳出來（存檔照樣在背景進行，失敗會另外 toast 提示）。
+          saveRecountValueRemote(style, color, size, field, val);
+          // 如果使用者很快又點回某個複盤輸入框繼續改（例如發現剛打錯字要刪掉重打），
+          // 這時候不能整頁重畫，否則會把使用者正在編輯的輸入框整個換掉，
+          // 造成「打字/刪除打到一半突然卡住」的狀況
+          if(state.view === "recount" && !isEditingRecountField()) render();
         }
+      }
+      // 複盤備註輸入框失焦時存檔；純文字，選填，不做算式驗證
+      if(t && t.classList && t.classList.contains('ri-note-input')){
+        var nstyle = t.getAttribute('data-style');
+        var ncolor = t.getAttribute('data-color');
+        var nsize = t.getAttribute('data-size');
+        var nval = t.value.trim();
+        (async function(){
+          await saveRecountNoteRemote(nstyle, ncolor, nsize, nval);
+          if(state.view === "recount" && !isEditingRecountField()) render();
+        })();
       }
       // 認領人輸入框失焦時存名字(存進 assignee)
       if(t && t.classList && t.classList.contains('ri-claim-input')){
