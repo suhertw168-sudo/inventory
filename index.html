@@ -346,6 +346,8 @@
     background:#eef4fa; color:#2f5d8a; white-space:nowrap; flex:0 0 auto;
   }
   .recount-item .ri-assignee.unassigned{ background:#f1ece1; color:var(--muted); }
+  .recount-item .ri-assignee.active{ background:#fdf0e4; color:#c45a1e; }
+  .recount-item .ri-assignee.done{ background:#e8f5ec; color:#2f7a3e; }
   .recount-item .ri-nums{
     display:flex; align-items:flex-end; gap:10px;
   }
@@ -370,10 +372,6 @@
   }
   .recount-item .ri-note{
     margin-top:12px; display:flex; align-items:center; gap:6px;
-  }
-  .recount-item .ri-claim{
-    margin-top:12px; padding-top:12px; border-top:1px solid var(--line);
-    display:flex; align-items:center; gap:6px;
   }
   .recount-item .ri-claim-label{ font-size:13px; color:var(--muted); font-weight:700; flex:0 0 auto; }
   .recount-item .ri-claim-input, .recount-item .ri-note-input{
@@ -540,7 +538,7 @@ var ADMIN_PASSWORD = "6666";
 var state = {
   structure: null,
   counts: {},           // key "style|color|size" -> {shelf, stock}
-  recounts: {},         // key "style|color|size" -> {shelf, stock, note, assignee, markedAt} 複盤任務
+  recounts: {},         // key "style|color|size" -> {shelf, stock, note, assignee, markedAt, editingBy, editingAt} 複盤任務
   recountFilter: "",    // 複盤清單的認領人篩選（空=全部）
   recountBrandFilter: "", // 複盤清單的品牌篩選（空=全部）
   claims: {},            // key 型號名稱 -> true（已認領，避免多人同時把同一型號登入ERP）。沒有這個 key = 未認領
@@ -752,6 +750,47 @@ async function clearAllCountsRemote(){
     await apiPost({ action:"clearCounts" });
   }catch(e){ console.error("clear counts failed", e); showToast("清空失敗，請檢查網路"); }
 }
+// ---------- 複盤身分（存這台手機的 localStorage，避免每格重打名字） ----------
+var RECOUNT_USERNAME_KEY = "recountUserName";
+function getRecountUserName(){
+  try{ return (localStorage.getItem(RECOUNT_USERNAME_KEY) || "").trim(); }catch(e){ return ""; }
+}
+function setRecountUserName(name){
+  try{ localStorage.setItem(RECOUNT_USERNAME_KEY, (name || "").trim()); }catch(e){}
+}
+// 進複盤頁前先確認這台手機有沒有設定過身分，沒有的話跳出一次視窗詢問，之後不會再問
+function ensureRecountUserName(){
+  if(getRecountUserName()) return;
+  var name = prompt('進入複盤前，請先輸入你的名字。\n\n之後這台手機的複盤操作（填數字、正在複盤中）都會自動帶上這個名字，不用每格重打，之後也能隨時修改。');
+  if(name !== null) setRecountUserName(name);
+}
+
+// 「複盤中」提醒超過這麼久沒更新就視為過期，畫面上不再顯示（純前端計算，後端不用另外清）
+var RECOUNT_EDITING_TTL_MS = 3 * 60 * 1000; // 3 分鐘
+
+// 算出單一複盤品項現在該顯示的狀態小標籤：
+// 已完成 → 「✓ 由 X 複盤」；有人正在打字且不是自己 → 「⏳ X 複盤中」；
+// 有人填過但還沒完成 → 「X 處理中」；都沒有 → 「尚無人複盤」
+// 複盤人只有一個名字：實際存了架上/庫存數字的人，直接寫進 assignee，不再另外手動輸入
+function computeRecountBadge(r, isDoneNow){
+  var assignee = (r.assignee || "").trim();
+  var editingBy = (r.editingBy || "").trim();
+  var editingAt = r.editingAt ? new Date(r.editingAt).getTime() : 0;
+  var isEditingFresh = !!editingBy && (Date.now() - editingAt) < RECOUNT_EDITING_TTL_MS;
+  var myName = getRecountUserName();
+
+  if(isDoneNow && assignee){
+    return { cls:'done', text:'✓ 由 '+assignee+' 複盤' };
+  }
+  if(isEditingFresh && editingBy.toLowerCase() !== myName.toLowerCase()){
+    return { cls:'active', text:'⏳ '+editingBy+' 複盤中' };
+  }
+  if(assignee){
+    return { cls:'', text: assignee+' 處理中' };
+  }
+  return { cls:'unassigned', text:'尚無人複盤' };
+}
+
 // ---------- 複盤 API ----------
 async function markRecountRemote(style, color, size, assignee){
   var key = keyFor(style, color, size);
@@ -762,7 +801,9 @@ async function markRecountRemote(style, color, size, assignee){
     stock: existing.stock !== undefined ? existing.stock : "",
     note: existing.note !== undefined ? existing.note : "",
     assignee: assignee || "",
-    markedAt: existing.markedAt || ""
+    markedAt: existing.markedAt || "",
+    editingBy: existing.editingBy || "",
+    editingAt: existing.editingAt || ""
   };
   try{
     await apiPost({ action:"markRecount", style:style, color:color, size:size, assignee:assignee || "" });
@@ -775,25 +816,47 @@ async function unmarkRecountRemote(style, color, size){
     await apiPost({ action:"unmarkRecount", style:style, color:color, size:size });
   }catch(e){ console.error("unmark recount failed", e); showToast("取消失敗，請檢查網路"); }
 }
-// field 為 "shelf" 或 "stock"，value 是算式文字（如 "50+30"），跟第一次盤點的欄位是同一套規則
+// field 為 "shelf" 或 "stock"，value 是算式文字（如 "50+30"），跟第一次盤點的欄位是同一套規則。
+// 複盤人只有一個名字：誰實際存了這一格的架上/庫存數字，複盤人（assignee）就自動變成誰，不用手動輸入。
 async function saveRecountValueRemote(style, color, size, field, value){
   var key = keyFor(style, color, size);
-  var existing = state.recounts[key] || {shelf:"", stock:"", note:"", assignee:"", markedAt:""};
+  var existing = state.recounts[key] || {shelf:"", stock:"", note:"", assignee:"", markedAt:"", editingBy:"", editingAt:""};
   existing[field] = value;
+  var editor = getRecountUserName();
+  if(editor) existing.assignee = editor;
   state.recounts[key] = existing;
   try{
-    await apiPost({ action:"saveRecountValue", style:style, color:color, size:size, field:field, value:value });
+    await apiPost({ action:"saveRecountValue", style:style, color:color, size:size, field:field, value:value, editor:editor });
   }catch(e){ console.error("save recount value failed", e); showToast("儲存失敗，請檢查網路"); }
 }
 // 複盤備註：選填，不影響複盤完成進度的計算
 async function saveRecountNoteRemote(style, color, size, note){
   var key = keyFor(style, color, size);
-  var existing = state.recounts[key] || {shelf:"", stock:"", note:"", assignee:"", markedAt:""};
+  var existing = state.recounts[key] || {shelf:"", stock:"", note:"", assignee:"", markedAt:"", editingBy:"", editingAt:""};
   existing.note = note;
   state.recounts[key] = existing;
   try{
     await apiPost({ action:"saveRecountNote", style:style, color:color, size:size, note:note });
   }catch(e){ console.error("save recount note failed", e); showToast("儲存失敗，請檢查網路"); }
+}
+// 「開始複盤這一格」的提醒：架上/庫存輸入框一聚焦就送出，讓別人的手機看到「OO 複盤中」。
+// 純提醒、不是鎖，格子本身還是可以照樣輸入。同一格 20 秒內只送一次，避免頻繁點來點去洗網路請求；
+// 本地也不用因為這個 ping 重畫畫面──因為自己看不到自己的「複盤中」提醒（見 computeRecountBadge）。
+var recountEditingPingCache = {}; // key -> 上次送出 ping 的時間戳記(本地執行期記憶，重新整理就重置，沒關係)
+function startEditingRecountRemote(style, color, size){
+  var editor = getRecountUserName();
+  if(!editor) return; // 沒設定身分就不送提醒，不影響輸入
+  var key = keyFor(style, color, size);
+  var now = Date.now();
+  if(recountEditingPingCache[key] && (now - recountEditingPingCache[key]) < 20000) return;
+  recountEditingPingCache[key] = now;
+  var existing = state.recounts[key];
+  if(existing){
+    existing.editingBy = editor;
+    existing.editingAt = new Date().toISOString();
+  }
+  apiPost({ action:"startEditingRecount", style:style, color:color, size:size, editor:editor })
+    .catch(function(e){ console.error("start editing ping failed", e); });
 }
 async function clearRecountsRemote(){
   try{
@@ -1094,6 +1157,7 @@ async function syncFromBackend(){
     var all = await apiGet("all");
     if(!all || !Array.isArray(all.structure)) return;
     if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
+    var prevRecounts = state.recounts; // 存複盤頁就地更新用：跟同步前的舊資料比對哪些格子完成狀態有變
     if(all.recounts){ state.recounts = all.recounts; }
     if(all.claims){ state.claims = all.claims; }
 
@@ -1150,6 +1214,19 @@ async function syncFromBackend(){
     } else if(state.view === "summary"){
       // 只有資料真的有變動時才顯示「有新資料」提示，避免無謂打擾
       if(hasChange) showSummaryUpdateHint();
+    } else if(state.view === "recount"){
+      // 複盤頁不整頁重畫（避免打斷正在輸入的鍵盤），只針對畫面上已經存在的品項卡片，
+      // 用跟輸入框失焦時同一套 patchRecountItemDisplay() 局部更新差異/狀態小標籤，
+      // 讓「OO 複盤中」「由 OO 複盤」這類提醒能自然浮現，不用等使用者手動按「更新」。
+      // 新加入或被移出複盤清單的品項不會在這裡出現/消失，要手動更新或重新整理頁面才會反映。
+      document.querySelectorAll('.recount-item[data-key]').forEach(function(itemEl){
+        var key = itemEl.getAttribute('data-key');
+        var newR = state.recounts[key];
+        if(!newR) return;
+        var wasDone = isRecountFilled(prevRecounts[key]);
+        var isDoneNow = isRecountFilled(newR);
+        patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow);
+      });
     }
     // counting 畫面下故意不重畫，等使用者切換尺寸/顏色或按下一項時才會自然更新
   }catch(e){
@@ -1234,7 +1311,7 @@ function render(){
 // 造成打字打到一半、或按刪除鍵時畫面突然被重置的狀況。
 function isEditingRecountField(){
   var active = document.activeElement;
-  return !!(active && active.classList && (active.classList.contains('ri-input') || active.classList.contains('ri-claim-input') || active.classList.contains('ri-note-input')));
+  return !!(active && active.classList && (active.classList.contains('ri-input') || active.classList.contains('ri-note-input')));
 }
 
 // 摘要頁重畫前先記住目前展開的品牌／型號分組，重畫後再展開回來，
@@ -1946,6 +2023,14 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   var diffEl = itemEl.querySelector('.ri-diff-val');
   if(diffEl) diffEl.innerHTML = diffHtml;
 
+  // 就地更新狀態小標籤（尚無人複盤／OO 處理中／OO 複盤中／已由 OO 複盤）
+  var badge = computeRecountBadge(r, isDoneNow);
+  var badgeEl = itemEl.querySelector('.ri-assignee');
+  if(badgeEl){
+    badgeEl.className = 'ri-assignee' + (badge.cls ? ' '+badge.cls : '');
+    badgeEl.textContent = badge.text;
+  }
+
   // 這格從「未完成→完成」或「完成→未完成」時，順便把所屬品牌標題的計數 +1/-1（不用整段重算）
   if(wasDone !== isDoneNow){
     var brand = brandOfRecountKey(key);
@@ -2166,7 +2251,7 @@ function renderRecount(){
   });
   var hasUnassigned = keys.some(function(k){ return !(state.recounts[k].assignee || "").trim(); });
   if(hasUnassigned){
-    filterBtns += '<button class="chip'+(state.recountFilter==="__none__"?" active":"")+'" data-action="recount-filter" data-assignee="__none__">尚無人認領</button>';
+    filterBtns += '<button class="chip'+(state.recountFilter==="__none__"?" active":"")+'" data-action="recount-filter" data-assignee="__none__">尚無人複盤</button>';
   }
 
   // 品牌篩選器
@@ -2181,7 +2266,6 @@ function renderRecount(){
   // 產生單一複盤項目的 HTML
   function buildRecountItem(k){
     var r = state.recounts[k];
-    var assignee = (r.assignee || "").trim();
     var parts = k.split("|");
     var style = parts[0], color = parts[1], size = parts[2];
     var c = state.counts[k];
@@ -2210,11 +2294,15 @@ function renderRecount(){
     }
     var shelfCalcHint = (shelfFilled && /[+×xX*＊＋]/.test(shelfRaw)) ? '<div class="ri-calc-hint">= '+recountShelfVal+'</div>' : '';
     var stockCalcHint = (stockFilled && /[+×xX*＊＋]/.test(stockRaw)) ? '<div class="ri-calc-hint">= '+recountStockVal+'</div>' : '';
+    var badge = computeRecountBadge(r, recountVal !== null);
 
-    return '<div class="recount-item'+(recountVal!==null?' done':'')+'">'+
+    return '<div class="recount-item'+(recountVal!==null?' done':'')+'" data-key="'+escapeHtml(k)+'">'+
       '<div class="ri-top">'+
         '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+'</div>'+
-        (assignee ? '<span class="ri-assignee">'+escapeHtml(assignee)+' 處理</span>' : '<span class="ri-assignee unassigned">尚無人認領</span>')+
+        '<div class="hdr-right">'+
+          '<span class="ri-assignee'+(badge.cls?' '+badge.cls:'')+'">'+escapeHtml(badge.text)+'</span>'+
+          '<button class="mini-btn" data-action="unmark-recount-confirm" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" style="border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep);">取消複盤</button>'+
+        '</div>'+
       '</div>'+
       '<div class="ri-nums">'+
         '<div class="ri-num"><div class="ri-num-label">第一次</div><div class="ri-num-val">'+(firstTotal!==null?firstTotal:'—')+'</div></div>'+
@@ -2237,12 +2325,6 @@ function renderRecount(){
         '<span class="ri-claim-label">備註：</span>'+
         '<input class="ri-note-input" type="text" value="'+escapeHtml(noteRaw)+'" placeholder="" '+
           'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-action="recount-note">'+
-      '</div>'+
-      '<div class="ri-claim">'+
-        '<span class="ri-claim-label">複盤人：</span>'+
-        '<input class="ri-claim-input" type="text" value="'+escapeHtml(assignee)+'" placeholder="填你的名字" '+
-          'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-action="recount-claim">'+
-        '<button class="mini-btn" data-action="unmark-recount" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" style="border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep); margin-left:8px;">移除</button>'+
       '</div>'+
     '</div>';
   }
@@ -2301,17 +2383,20 @@ function renderRecount(){
     '<button class="icon-btn" data-action="manual-sync-recount" style="font-size:12px; padding:6px 10px;">🔄 更新</button>'+
   '</div></div>'+
   '<main>'+
+    '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 14px; margin-bottom:12px; background:#fcfbf8; border:1px solid var(--line); border-radius:10px; font-size:13px;">'+
+      '<span style="color:var(--muted);">你的複盤身分：<strong style="color:var(--ink);">'+(getRecountUserName() ? escapeHtml(getRecountUserName()) : '尚未設定')+'</strong></span>'+
+      '<button class="mini-btn" data-action="change-recount-username">'+(getRecountUserName() ? '改名字' : '設定名字')+'</button>'+
+    '</div>'+
     renderRecountProgressOverview()+
     '<div class="panel">'+
       '<h2>複盤清單</h2>'+
-      '<p class="sub">共 '+keys.length+' 筆。填入架上、庫存的複盤數字（都可以加可以乘），兩格都填了會自動跟第一次盤點的加總對照差異。備註為選填，沒填不影響完成進度。多人可分工複盤不同格，各自填自己的複盤人。</p>'+
+      '<p class="sub">共 '+keys.length+' 筆。填入架上、庫存的複盤數字（都可以加可以乘），兩格都填了會自動跟第一次盤點的加總對照差異。備註為選填，沒填不影響完成進度。誰實際填了數字，複盤人就自動記成誰，不用手動輸入；打字時如果別人也在盤同一格，旁邊會提醒「OO 複盤中」（僅提醒，不會鎖住輸入）。</p>'+
       '<div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px;">依品牌篩選</div>'+
       '<div class="chip-strip" style="margin-bottom:12px;">'+brandFilterBtns+'</div>'+
       '<div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px;">依複盤人篩選</div>'+
       '<div class="chip-strip" style="margin-bottom:16px;">'+filterBtns+'</div>'+
       rowsHtml+
     '</div>'+
-    (keys.length > 0 ? '<button class="btn secondary" data-action="clear-recounts" style="color:var(--accent-deep);border-color:var(--accent-deep)">清空所有複盤任務</button>' : '')+
   '</main>';
 }
 
@@ -2608,7 +2693,20 @@ function bindEvents(){
       }
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
 
-      else if(action === 'goto-recount'){ state.view = "recount"; state.recountFilter = ""; state.recountBrandFilter = ""; render(); }
+      else if(action === 'goto-recount'){
+        state.view = "recount"; state.recountFilter = ""; state.recountBrandFilter = "";
+        ensureRecountUserName();
+        render();
+      }
+
+      else if(action === 'change-recount-username'){
+        var currentName = getRecountUserName();
+        var newName = prompt('請輸入你的名字（用來標記「誰正在複盤」，之後這台手機的複盤操作都會自動帶上這個名字）：', currentName || '');
+        if(newName === null) return; // 取消
+        setRecountUserName(newName);
+        showToast(newName.trim() ? '已設定複盤身分為「'+newName.trim()+'」' : '已清空複盤身分');
+        render();
+      }
 
       else if(action === 'toggle-claim'){
         var claimStyleName = el.getAttribute('data-style');
@@ -2641,6 +2739,19 @@ function bindEvents(){
         var size = el.getAttribute('data-size');
         unmarkRecountRemote(style, color, size);
         showToast('已移除複盤標記');
+        render_keepExpanded();
+      }
+
+      else if(action === 'unmark-recount-confirm'){
+        // 複盤清單頁的「取消複盤」按鈕：把這個品項移出複盤清單，需要二次確認避免手滑誤按
+        var ucStyle = el.getAttribute('data-style');
+        var ucColor = el.getAttribute('data-color');
+        var ucSize = el.getAttribute('data-size');
+        if(!confirm('⚠️ 確定要把「'+ucStyle+' · '+ucColor+' · '+ucSize+'」移出複盤清單嗎？\n\n這會清除這一格的複盤標記，以及已經填的架上/庫存複盤數字跟備註（不影響第一次盤點的資料）。此動作無法復原。')){
+          return;
+        }
+        unmarkRecountRemote(ucStyle, ucColor, ucSize);
+        showToast('已移出複盤清單');
         render_keepExpanded();
       }
 
@@ -3057,6 +3168,15 @@ function bindEvents(){
       }
     });
 
+    // 複盤架上/庫存輸入框一聚焦，就送出「開始複盤這一格」的提醒(背景送出，不等回應、不重畫)，
+    // 讓別人的手機看到「OO 複盤中」。用 capture 是因為 focus 不會冒泡。
+    app.addEventListener('focus', function(ev){
+      var t = ev.target;
+      if(t && t.classList && t.classList.contains('ri-input')){
+        startEditingRecountRemote(t.getAttribute('data-style'), t.getAttribute('data-color'), t.getAttribute('data-size'));
+      }
+    }, true);
+
     // 安全網：輸入框失焦時（切到別的地方、收起鍵盤）自動把最後一個數字收進去並存檔
     app.addEventListener('blur', function(ev){
       var t = ev.target;
@@ -3096,17 +3216,6 @@ function bindEvents(){
         var nsize = t.getAttribute('data-size');
         var nval = t.value.trim();
         saveRecountNoteRemote(nstyle, ncolor, nsize, nval);
-      }
-      // 認領人輸入框失焦時存名字(存進 assignee)
-      if(t && t.classList && t.classList.contains('ri-claim-input')){
-        var cstyle = t.getAttribute('data-style');
-        var ccolor = t.getAttribute('data-color');
-        var csize = t.getAttribute('data-size');
-        var cname = t.value.trim();
-        (async function(){
-          await markRecountRemote(cstyle, ccolor, csize, cname);
-          if(state.view === "recount" && !isEditingRecountField()) render();
-        })();
       }
     }, true); // 用 capture，因為 blur 不會冒泡
 
