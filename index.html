@@ -775,8 +775,8 @@ var RECOUNT_EDITING_TTL_MS = 3 * 60 * 1000; // 3 分鐘
 // 有人填過但還沒完成 → 「X 處理中」；都沒有 → 「尚無人複盤」
 // 複盤人只有一個名字：實際存了架上/庫存數字的人，直接寫進 assignee，不再另外手動輸入
 function computeRecountBadge(r, isDoneNow){
-  var assignee = (r.assignee || "").trim();
-  var editingBy = (r.editingBy || "").trim();
+  var assignee = String(r.assignee || "").trim();
+  var editingBy = String(r.editingBy || "").trim();
   var editingAt = r.editingAt ? new Date(r.editingAt).getTime() : 0;
   var isEditingFresh = !!editingBy && (Date.now() - editingAt) < RECOUNT_EDITING_TTL_MS;
   var myName = getRecountUserName();
@@ -989,6 +989,25 @@ function normalizeCounts(counts){
   return out;
 }
 
+// 複盤任務的文字欄位一律強制轉成字串型別，避免 Google Sheet 把某格內容存成 number
+// （例如身分名字剛好打成純數字）時，前端對這些欄位做 .trim()/.toLowerCase() 直接炸掉整頁。
+// 數字格位（架上複盤/庫存複盤）維持原樣，使用處本來就會另外用 String()/parseExpr 處理。
+var RECOUNT_TEXT_FIELDS = ["note","assignee","editingBy","lastEditBy"];
+function normalizeRecounts(recounts){
+  if(!recounts || typeof recounts !== 'object') return recounts || {};
+  var out = {};
+  Object.keys(recounts).forEach(function(k){
+    var r = recounts[k] || {};
+    var nr = {};
+    Object.keys(r).forEach(function(field){
+      var v = r[field];
+      nr[field] = (RECOUNT_TEXT_FIELDS.indexOf(field) !== -1 && v !== null && v !== undefined) ? String(v) : v;
+    });
+    out[String(k)] = nr;
+  });
+  return out;
+}
+
 // 載入畫面的計時器與階段控制
 var loadStartTime = null;
 var loadTimerInterval = null;
@@ -1045,7 +1064,7 @@ async function init(){
       structure = all.structure; // 即使是空陣列也算合法（代表這個 Sheet 還沒設定任何款式）
       counts = all.counts || {};
       if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
-      if(all.recounts){ state.recounts = all.recounts; }
+      if(all.recounts){ state.recounts = normalizeRecounts(all.recounts); }
       if(all.claims){ state.claims = all.claims; }
     } else {
       fetchFailed = true;
@@ -1172,7 +1191,7 @@ async function syncFromBackend(){
     if(!all || !Array.isArray(all.structure)) return;
     if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
     var prevRecounts = state.recounts; // 存複盤頁就地更新用：跟同步前的舊資料比對哪些格子完成狀態有變
-    if(all.recounts){ state.recounts = all.recounts; }
+    if(all.recounts){ state.recounts = normalizeRecounts(all.recounts); }
     if(all.claims){ state.claims = all.claims; }
 
     // 比對：跟目前的 state 比，看資料有沒有真的變動（避免無謂的「有新資料」提示）
@@ -1239,7 +1258,12 @@ async function syncFromBackend(){
         if(!newR) return;
         var wasDone = isRecountFilled(prevRecounts[key]);
         var isDoneNow = isRecountFilled(newR);
-        patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow);
+        try{
+          patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow);
+        }catch(e){
+          // 單一格位資料異常就跳過那一格，不要讓其他格位的就地更新也一起中斷
+          console.error("patchRecountItemDisplay failed for key", key, e);
+        }
       });
       // 清單本身（有沒有新增/被移除的品項）不在上面的局部 patch 範圍內，故意留給使用者自己決定何時重畫，
       // 免得正在複盤中清單忽然變動、打斷操作。這裡只是拿「目前畫面上實際看到的清單」(recountRenderedKeys，
@@ -2241,7 +2265,7 @@ function renderRecount(){
   // （例如 "Amy" 跟 "amy" 歸類成同一個篩選項目），顯示用大小寫取第一次出現的那個寫法。
   var assigneeCanonical = {}; // 小寫 -> 顯示用原始大小寫
   keys.forEach(function(k){
-    var a = (state.recounts[k].assignee || "").trim();
+    var a = String(state.recounts[k].assignee || "").trim();
     if(a){
       var lower = a.toLowerCase();
       if(!assigneeCanonical.hasOwnProperty(lower)) assigneeCanonical[lower] = a;
@@ -2280,7 +2304,7 @@ function renderRecount(){
     var isActive = state.recountFilter !== "" && state.recountFilter !== "__none__" && state.recountFilter.toLowerCase() === a.toLowerCase();
     filterBtns += '<button class="chip'+(isActive?" active":"")+'" data-action="recount-filter" data-assignee="'+escapeHtml(a)+'">'+escapeHtml(a)+'</button>';
   });
-  var hasUnassigned = keys.some(function(k){ return !(state.recounts[k].assignee || "").trim(); });
+  var hasUnassigned = keys.some(function(k){ return !String(state.recounts[k].assignee || "").trim(); });
   if(hasUnassigned){
     filterBtns += '<button class="chip'+(state.recountFilter==="__none__"?" active":"")+'" data-action="recount-filter" data-assignee="__none__">尚無人複盤</button>';
   }
@@ -2363,9 +2387,22 @@ function renderRecount(){
     '</div>';
   }
 
+  // 單一格位的資料如果格式異常，這裡擋下來，只讓那一格顯示錯誤卡片，不要讓整頁複盤清單畫不出來
+  function safeBuildRecountItem(k){
+    try{
+      return buildRecountItem(k);
+    }catch(e){
+      console.error("buildRecountItem failed for key", k, e);
+      return '<div class="recount-item" data-key="'+escapeHtml(k)+'">'+
+        '<div class="ri-top"><div class="ri-title">'+escapeHtml(k)+'</div></div>'+
+        '<div style="color:#c0392b; font-size:13px;">⚠️ 這一格資料格式異常，暫時無法顯示，不影響其他品項</div>'+
+      '</div>';
+    }
+  }
+
   // 判斷某 key 是否通過目前的篩選條件
   function passFilter(k){
-    var assignee = (state.recounts[k].assignee || "").trim();
+    var assignee = String(state.recounts[k].assignee || "").trim();
     // 認領人篩選：姓名不分大小寫視為同一人
     if(state.recountFilter === "__none__"){ if(assignee) return false; }
     else if(state.recountFilter !== ""){ if(assignee.toLowerCase() !== state.recountFilter.toLowerCase()) return false; }
@@ -2395,7 +2432,7 @@ function renderRecount(){
   } else {
     // 沒品牌的排最前
     if(noBrandKeys.length > 0){
-      noBrandKeys.forEach(function(k){ rowsHtml += buildRecountItem(k); });
+      noBrandKeys.forEach(function(k){ rowsHtml += safeBuildRecountItem(k); });
     }
     brands.forEach(function(b){
       if(!byBrand[b]) return;
@@ -2406,7 +2443,7 @@ function renderRecount(){
       }).length;
       rowsHtml += '<div class="recount-brand-head" data-brand="'+escapeHtml(b)+'" data-done="'+doneN+'" data-total="'+total+'">'+escapeHtml(b)+
         ' <span class="rb-count" style="font-weight:600; color:var(--muted); font-size:12px;">（'+doneN+'/'+total+' 已複盤）</span></div>';
-      byBrand[b].forEach(function(k){ rowsHtml += buildRecountItem(k); });
+      byBrand[b].forEach(function(k){ rowsHtml += safeBuildRecountItem(k); });
     });
   }
 
