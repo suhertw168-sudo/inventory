@@ -1072,6 +1072,9 @@ var SYNC_INTERVAL_MS = 30000; // 30 秒同步一次
 var autoSyncTimer = null;
 var isSyncing = false;
 var lastSyncTime = null;
+// 複盤頁「目前畫面上實際畫出來的清單」有哪些 key，只在 renderRecount() 真的重畫清單時更新。
+// 拿來跟每輪自動同步後的最新清單比對，算出「跟畫面上看到的」差幾筆，藉此決定要不要顯示變動提示橫幅。
+var recountRenderedKeys = null;
 
 function getSyncStatusText(){
   if(!isPageVisible) return "💤 已暫停（切回前景自動恢復）";
@@ -1090,6 +1093,15 @@ function showSummaryUpdateHint(){
   if(hint){
     hint.style.display = 'inline-flex';
   }
+}
+
+// 在複盤頁頂端顯示「清單有 N 筆變動，點此更新」提示，只改這個既有 DOM 元素的文字跟顯示狀態，
+// 完全不碰清單本身、不呼叫 render()，使用者要自己點了才會真正重畫清單（見 refresh-recount-list）
+function showRecountListChangedHint(n){
+  var hint = document.getElementById('recount-update-hint');
+  if(!hint) return;
+  hint.textContent = '🔔 複盤清單有 ' + n + ' 筆變動，點此更新';
+  hint.style.display = 'block';
 }
 
 // 追蹤頁面是否在前景（被使用者實際看著）
@@ -1227,6 +1239,17 @@ async function syncFromBackend(){
         var isDoneNow = isRecountFilled(newR);
         patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow);
       });
+      // 清單本身（有沒有新增/被移除的品項）不在上面的局部 patch 範圍內，故意留給使用者自己決定何時重畫，
+      // 免得正在複盤中清單忽然變動、打斷操作。這裡只是拿「目前畫面上實際看到的清單」(recountRenderedKeys，
+      // 只有真的重畫過清單才會更新，見 renderRecount()) 跟最新的 state.recounts 做差集比對，
+      // 算出跟畫面上看到的差幾筆，有差就顯示提示橫幅，完全不觸發任何重畫。
+      if(recountRenderedKeys){
+        var curRecountKeys = Object.keys(state.recounts);
+        var addedN = curRecountKeys.filter(function(k){ return recountRenderedKeys.indexOf(k) === -1; }).length;
+        var removedN = recountRenderedKeys.filter(function(k){ return curRecountKeys.indexOf(k) === -1; }).length;
+        var changedN = addedN + removedN;
+        if(changedN > 0) showRecountListChangedHint(changedN);
+      }
     }
     // counting 畫面下故意不重畫，等使用者切換尺寸/顏色或按下一項時才會自然更新
   }catch(e){
@@ -2205,6 +2228,8 @@ function computeClaimBrandProgress(){
 // ---------- 複盤清單畫面 ----------
 function renderRecount(){
   var keys = Object.keys(state.recounts || {});
+  // 記錄這次真的把清單畫出來時，畫面上有哪些品項，當作之後判斷「清單有沒有變動」的基準點
+  recountRenderedKeys = keys.slice();
 
   // 收集所有認領人(用於篩選)。認領人姓名都是英文字母，不分大小寫視為同一人
   // （例如 "Amy" 跟 "amy" 歸類成同一個篩選項目），顯示用大小寫取第一次出現的那個寫法。
@@ -2377,11 +2402,15 @@ function renderRecount(){
   }
 
   return ''+
-  '<div class="topbar"><div class="topbar-row">'+
-    '<button class="icon-btn" data-action="goto-home">‹ 返回</button>'+
-    '<div class="brand">複盤任務</div>'+
-    '<button class="icon-btn" data-action="manual-sync-recount" style="font-size:12px; padding:6px 10px;">🔄 更新</button>'+
-  '</div></div>'+
+  '<div class="topbar">'+
+    '<div class="topbar-row">'+
+      '<button class="icon-btn" data-action="goto-home">‹ 返回</button>'+
+      '<div class="brand">複盤任務</div>'+
+      '<button class="icon-btn" data-action="manual-sync-recount" style="font-size:12px; padding:6px 10px;">🔄 更新</button>'+
+    '</div>'+
+    '<div id="recount-update-hint" data-action="refresh-recount-list" style="display:none; cursor:pointer; background:#fff4e6; border-bottom:1px solid #f0d8cd; padding:8px 16px; font-size:13px; color:#c45a1e; text-align:center; font-weight:700;">'+
+    '</div>'+
+  '</div>'+
   '<main>'+
     '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 14px; margin-bottom:12px; background:#fcfbf8; border:1px solid var(--line); border-radius:10px; font-size:13px;">'+
       '<span style="color:var(--muted);">你的複盤身分：<strong style="color:var(--ink);">'+(getRecountUserName() ? escapeHtml(getRecountUserName()) : '尚未設定')+'</strong></span>'+
@@ -2769,6 +2798,11 @@ function bindEvents(){
         await syncFromBackend();
         render();
         showToast('已更新');
+      }
+      else if(action === 'refresh-recount-list'){
+        // 使用者主動點了「清單有變動」提示才重畫：資料在背景同步當下就已經寫進 state.recounts，
+        // 這裡單純把清單重新畫出來，重畫時 renderRecount() 會自動重設變動基準點，橫幅跟著消失
+        render();
       }
 
       else if(action === 'clear-recounts'){
