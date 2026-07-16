@@ -2060,6 +2060,30 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   var stockRaw = (r.stock !== null && r.stock !== undefined) ? String(r.stock) : "";
   var recountVal = isDoneNow ? (parseExpr(shelfRaw) + parseExpr(stockRaw)) : null;
 
+  // 就地更新架上／庫存輸入框本身：兩欄用同一套迴圈邏輯，不要各寫各的。
+  // 如果這個輸入框現在剛好是使用者正在打字的那一格（document.activeElement），就跳過不動它，
+  // 避免背景同步把打到一半的內容蓋掉；沒在打字的那一格才同步成最新值（這正是先前漏掉的部分，
+  // 之前這個函式只更新加總／差異／複盤人，從沒寫回過架上／庫存輸入框的畫面值）。
+  [{field:'shelf', raw:shelfRaw}, {field:'stock', raw:stockRaw}].forEach(function(entry){
+    var inputEl = itemEl.querySelector('.ri-input[data-field="'+entry.field+'"]');
+    if(!inputEl || document.activeElement === inputEl) return;
+    if(inputEl.value !== entry.raw) inputEl.value = entry.raw;
+    // 算式提示（例如「= 80」）跟著同步：有算式符號才顯示，沒有就把提示拿掉
+    var numEl = inputEl.closest('.ri-num');
+    var hintEl = numEl ? numEl.querySelector('.ri-calc-hint') : null;
+    var hasCalc = entry.raw.trim() !== "" && /[+×xX*＊＋]/.test(entry.raw);
+    if(hasCalc){
+      if(!hintEl && numEl){
+        hintEl = document.createElement('div');
+        hintEl.className = 'ri-calc-hint';
+        numEl.appendChild(hintEl);
+      }
+      if(hintEl) hintEl.textContent = '= ' + parseExpr(entry.raw);
+    } else if(hintEl){
+      hintEl.remove();
+    }
+  });
+
   var diffHtml = "";
   if(firstTotal !== null && recountVal !== null){
     var diff = recountVal - firstTotal;
