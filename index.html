@@ -2337,16 +2337,17 @@ function renderRecount(){
   });
   var hasNoBrand = keys.some(function(k){ return !brandOfKey(k); });
 
-  // 認領人篩選器
+  // 認領人篩選器：順序固定「全部」→「尚無人複盤」→ 其他人名，
+  // 尚無人複盤排第二個是刻意的，不跟著人名數量往後擠，才好找
   var filterBtns = '<button class="chip'+(state.recountFilter===""?" active":"")+'" data-action="recount-filter" data-assignee="">全部</button>';
-  assignees.forEach(function(a){
-    var isActive = state.recountFilter !== "" && state.recountFilter !== "__none__" && state.recountFilter.toLowerCase() === a.toLowerCase();
-    filterBtns += '<button class="chip'+(isActive?" active":"")+'" data-action="recount-filter" data-assignee="'+escapeHtml(a)+'">'+escapeHtml(a)+'</button>';
-  });
   var hasUnassigned = keys.some(function(k){ return !String(state.recounts[k].assignee || "").trim(); });
   if(hasUnassigned){
     filterBtns += '<button class="chip'+(state.recountFilter==="__none__"?" active":"")+'" data-action="recount-filter" data-assignee="__none__">尚無人複盤</button>';
   }
+  assignees.forEach(function(a){
+    var isActive = state.recountFilter !== "" && state.recountFilter !== "__none__" && state.recountFilter.toLowerCase() === a.toLowerCase();
+    filterBtns += '<button class="chip'+(isActive?" active":"")+'" data-action="recount-filter" data-assignee="'+escapeHtml(a)+'">'+escapeHtml(a)+'</button>';
+  });
 
   // 品牌篩選器
   var brandFilterBtns = '<button class="chip'+(state.recountBrandFilter===""?" active":"")+'" data-action="recount-brand-filter" data-brand="">全部品牌</button>';
