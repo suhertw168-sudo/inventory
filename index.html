@@ -2055,19 +2055,27 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   var firstShelf = c && c.shelf !== "" && c.shelf !== null && c.shelf !== undefined ? (Number(c.shelf)||0) : null;
   var firstStock = c && c.stock !== "" && c.stock !== null && c.stock !== undefined ? (Number(c.stock)||0) : null;
   var firstTotal = (firstShelf !== null || firstStock !== null) ? ((firstShelf||0)+(firstStock||0)) : null;
+  var countedBy = (c && c.countedBy) ? String(c.countedBy).trim() : "";
 
   var shelfRaw = (r.shelf !== null && r.shelf !== undefined) ? String(r.shelf) : "";
   var stockRaw = (r.stock !== null && r.stock !== undefined) ? String(r.stock) : "";
+  var noteRaw = (r.note !== null && r.note !== undefined) ? String(r.note) : "";
   var recountVal = isDoneNow ? (parseExpr(shelfRaw) + parseExpr(stockRaw)) : null;
 
-  // 就地更新架上／庫存輸入框本身：兩欄用同一套迴圈邏輯，不要各寫各的。
+  // 就地更新架上／庫存／備註三個輸入框本身：同一套迴圈邏輯，不要各寫各的（備註沒有算式提示，
+  // 用 hasCalcHint 開關跳過那段就好，邏輯還是共用同一份）。
   // 如果這個輸入框現在剛好是使用者正在打字的那一格（document.activeElement），就跳過不動它，
-  // 避免背景同步把打到一半的內容蓋掉；沒在打字的那一格才同步成最新值（這正是先前漏掉的部分，
-  // 之前這個函式只更新加總／差異／複盤人，從沒寫回過架上／庫存輸入框的畫面值）。
-  [{field:'shelf', raw:shelfRaw}, {field:'stock', raw:stockRaw}].forEach(function(entry){
-    var inputEl = itemEl.querySelector('.ri-input[data-field="'+entry.field+'"]');
+  // 避免背景同步把打到一半的內容蓋掉；沒在打字的那一格才同步成最新值——包含同步成空字串，
+  // 這樣 A 機刪掉備註之後，B 機才會真的跟著清空，不會被「空字串是 falsy」擋下來。
+  [
+    {field:'shelf', raw:shelfRaw, selector:'.ri-input[data-field="shelf"]', hasCalcHint:true},
+    {field:'stock', raw:stockRaw, selector:'.ri-input[data-field="stock"]', hasCalcHint:true},
+    {field:'note',  raw:noteRaw,  selector:'.ri-note-input',                hasCalcHint:false}
+  ].forEach(function(entry){
+    var inputEl = itemEl.querySelector(entry.selector);
     if(!inputEl || document.activeElement === inputEl) return;
     if(inputEl.value !== entry.raw) inputEl.value = entry.raw;
+    if(!entry.hasCalcHint) return;
     // 算式提示（例如「= 80」）跟著同步：有算式符號才顯示，沒有就把提示拿掉
     var numEl = inputEl.closest('.ri-num');
     var hintEl = numEl ? numEl.querySelector('.ri-calc-hint') : null;
@@ -2083,6 +2091,13 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
       hintEl.remove();
     }
   });
+
+  // 「第一次」跟「初盤：OO」都是唯讀顯示（沒有輸入框，不用防呆保護），直接同步成最新值即可，
+  // 避免 A 機重新初盤或改了初盤人之後，B 機這裡還卡著舊資料。
+  var firstValEl = itemEl.querySelector('.ri-first-val');
+  if(firstValEl) firstValEl.textContent = (firstTotal !== null ? firstTotal : '—');
+  var countedByEl = itemEl.querySelector('.ri-countedby');
+  if(countedByEl) countedByEl.textContent = '初盤：' + (countedBy || '未記錄');
 
   var diffHtml = "";
   if(firstTotal !== null && recountVal !== null){
@@ -2379,7 +2394,7 @@ function renderRecount(){
     return '<div class="recount-item'+(recountVal!==null?' done':'')+'" data-key="'+escapeHtml(k)+'">'+
       '<div class="ri-top">'+
         '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+
-          '<span style="font-weight:400; color:var(--muted); font-size:12px; margin-left:8px;">初盤：'+escapeHtml(countedBy || '未記錄')+'</span>'+
+          '<span class="ri-countedby" style="font-weight:400; color:var(--muted); font-size:12px; margin-left:8px;">初盤：'+escapeHtml(countedBy || '未記錄')+'</span>'+
         '</div>'+
         '<div class="hdr-right">'+
           '<span class="ri-assignee'+(badge.cls?' '+badge.cls:'')+'">'+escapeHtml(badge.text)+'</span>'+
@@ -2387,7 +2402,7 @@ function renderRecount(){
         '</div>'+
       '</div>'+
       '<div class="ri-nums">'+
-        '<div class="ri-num"><div class="ri-num-label">第一次</div><div class="ri-num-val">'+(firstTotal!==null?firstTotal:'—')+'</div></div>'+
+        '<div class="ri-num"><div class="ri-num-label">第一次</div><div class="ri-num-val ri-first-val">'+(firstTotal!==null?firstTotal:'—')+'</div></div>'+
         '<div class="ri-arrow">→</div>'+
         '<div class="ri-num"><div class="ri-num-label">複盤加總</div><div class="ri-num-val ri-total-val">'+(recountVal!==null?recountVal:'—')+'</div></div>'+
         '<div class="ri-arrow">=</div>'+
