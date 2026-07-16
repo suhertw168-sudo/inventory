@@ -627,7 +627,7 @@ async function loadAllCounts(structure){
 var SAVE_RETRY_DELAYS_MS = [1500, 4000, 9000]; // 存檔失敗時的自動重試間隔（毫秒），共重試 3 次
 
 // 空白就維持空字串（代表沒填），有填才換算成數字（這樣才能區分「沒填」跟「填 0」）
-function buildCountVal(shelfRaw, stockRaw){
+function buildCountVal(shelfRaw, stockRaw, countedBy){
   var shelfEmpty = (shelfRaw === "" || shelfRaw === null || shelfRaw === undefined);
   var stockEmpty = (stockRaw === "" || stockRaw === null || stockRaw === undefined);
   var shelfNum = shelfEmpty ? "" : parseExpr(shelfRaw);
@@ -635,7 +635,8 @@ function buildCountVal(shelfRaw, stockRaw){
   var total = (shelfEmpty && stockEmpty) ? "" : (parseExpr(shelfRaw) + parseExpr(stockRaw));
   return {
     shelf: shelfNum, stock: stockNum, total: total,
-    shelfExpr: shelfRaw, stockExpr: stockRaw // 原始算式文字，僅保留在本次開啟工具的記憶體中
+    shelfExpr: shelfRaw, stockExpr: stockRaw, // 原始算式文字，僅保留在本次開啟工具的記憶體中
+    countedBy: countedBy || "" // 存這一格的人（跟複盤共用同一套「我是誰」身分機制）
   };
 }
 
@@ -643,17 +644,18 @@ function buildCountVal(shelfRaw, stockRaw){
 function saveCountOptimistic(style, color, size, shelfRaw, stockRaw){
   var key = keyFor(style, color, size);
   var prevSnapshot = state.counts.hasOwnProperty(key) ? state.counts[key] : null;
-  state.counts[key] = buildCountVal(shelfRaw, stockRaw); // 立刻反映在畫面上
+  var editor = getRecountUserName();
+  state.counts[key] = buildCountVal(shelfRaw, stockRaw, editor); // 立刻反映在畫面上
   clearFailedSave(key); // 這格若之前標記過失敗，現在重新嘗試，先清掉舊的失敗提示
   state.pendingSaveKeys[key] = true;
-  attemptSaveCount({style:style, color:color, size:size, shelfRaw:shelfRaw, stockRaw:stockRaw, prevSnapshot:prevSnapshot}, 0);
+  attemptSaveCount({style:style, color:color, size:size, shelfRaw:shelfRaw, stockRaw:stockRaw, prevSnapshot:prevSnapshot, editor:editor}, 0);
 }
 
 async function attemptSaveCount(payload, attemptIdx){
   var key = keyFor(payload.style, payload.color, payload.size);
-  var val = buildCountVal(payload.shelfRaw, payload.stockRaw);
+  var val = buildCountVal(payload.shelfRaw, payload.stockRaw, payload.editor);
   try{
-    await apiPost({ action:"saveCount", style:payload.style, color:payload.color, size:payload.size, shelf:val.shelf, stock:val.stock });
+    await apiPost({ action:"saveCount", style:payload.style, color:payload.color, size:payload.size, shelf:val.shelf, stock:val.stock, editor:payload.editor });
     delete state.pendingSaveKeys[key];
   }catch(e){
     console.error("save count failed (attempt "+(attemptIdx+1)+")", e);
@@ -750,7 +752,7 @@ async function clearAllCountsRemote(){
     await apiPost({ action:"clearCounts" });
   }catch(e){ console.error("clear counts failed", e); showToast("清空失敗，請檢查網路"); }
 }
-// ---------- 複盤身分（存這台手機的 localStorage，避免每格重打名字） ----------
+// ---------- 「我是誰」身分（存這台手機的 localStorage，初盤／複盤共用同一個身分，避免每格重打名字） ----------
 var RECOUNT_USERNAME_KEY = "recountUserName";
 function getRecountUserName(){
   try{ return (localStorage.getItem(RECOUNT_USERNAME_KEY) || "").trim(); }catch(e){ return ""; }
@@ -758,10 +760,10 @@ function getRecountUserName(){
 function setRecountUserName(name){
   try{ localStorage.setItem(RECOUNT_USERNAME_KEY, (name || "").trim()); }catch(e){}
 }
-// 進複盤頁前先確認這台手機有沒有設定過身分，沒有的話跳出一次視窗詢問，之後不會再問
+// 進盤點中／複盤頁前先確認這台手機有沒有設定過身分，沒有的話跳出一次視窗詢問，之後不會再問
 function ensureRecountUserName(){
   if(getRecountUserName()) return;
-  var name = prompt('進入複盤前，請先輸入你的名字。\n\n之後這台手機的複盤操作（填數字、正在複盤中）都會自動帶上這個名字，不用每格重打，之後也能隨時修改。');
+  var name = prompt('請先輸入你的名字。\n\n之後這台手機的盤點操作（初盤、複盤填數字、正在複盤中）都會自動帶上這個名字，不用每格重打，之後也能隨時修改。');
   if(name !== null) setRecountUserName(name);
 }
 
@@ -1765,6 +1767,10 @@ function renderCounting(){
     '</div>'+
   '</div>'+
   '<main>'+
+    '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 14px; margin-bottom:10px; background:#fcfbf8; border:1px solid var(--line); border-radius:10px; font-size:12px;">'+
+      '<span style="color:var(--muted);">你的盤點身分：<strong style="color:var(--ink);">'+(getRecountUserName() ? escapeHtml(getRecountUserName()) : '尚未設定')+'</strong></span>'+
+      '<button class="mini-btn" data-action="change-recount-username">'+(getRecountUserName() ? '改名字' : '設定名字')+'</button>'+
+    '</div>'+
     '<div class="chip-strip">'+colorChips+'</div>'+
     '<div class="count-card">'+
       '<div class="ctx-label">款式 / 顏色</div>'+
@@ -2320,10 +2326,13 @@ function renderRecount(){
     var shelfCalcHint = (shelfFilled && /[+×xX*＊＋]/.test(shelfRaw)) ? '<div class="ri-calc-hint">= '+recountShelfVal+'</div>' : '';
     var stockCalcHint = (stockFilled && /[+×xX*＊＋]/.test(stockRaw)) ? '<div class="ri-calc-hint">= '+recountStockVal+'</div>' : '';
     var badge = computeRecountBadge(r, recountVal !== null);
+    var countedBy = (c && c.countedBy) ? String(c.countedBy).trim() : "";
 
     return '<div class="recount-item'+(recountVal!==null?' done':'')+'" data-key="'+escapeHtml(k)+'">'+
       '<div class="ri-top">'+
-        '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+'</div>'+
+        '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+
+          '<span style="font-weight:400; color:var(--muted); font-size:12px; margin-left:8px;">初盤：'+escapeHtml(countedBy || '未記錄')+'</span>'+
+        '</div>'+
         '<div class="hdr-right">'+
           '<span class="ri-assignee'+(badge.cls?' '+badge.cls:'')+'">'+escapeHtml(badge.text)+'</span>'+
           '<button class="mini-btn" data-action="unmark-recount-confirm" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" style="border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep);">取消複盤</button>'+
@@ -2413,7 +2422,7 @@ function renderRecount(){
   '</div>'+
   '<main>'+
     '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 14px; margin-bottom:12px; background:#fcfbf8; border:1px solid var(--line); border-radius:10px; font-size:13px;">'+
-      '<span style="color:var(--muted);">你的複盤身分：<strong style="color:var(--ink);">'+(getRecountUserName() ? escapeHtml(getRecountUserName()) : '尚未設定')+'</strong></span>'+
+      '<span style="color:var(--muted);">你的盤點身分：<strong style="color:var(--ink);">'+(getRecountUserName() ? escapeHtml(getRecountUserName()) : '尚未設定')+'</strong></span>'+
       '<button class="mini-btn" data-action="change-recount-username">'+(getRecountUserName() ? '改名字' : '設定名字')+'</button>'+
     '</div>'+
     renderRecountProgressOverview()+
@@ -2730,10 +2739,10 @@ function bindEvents(){
 
       else if(action === 'change-recount-username'){
         var currentName = getRecountUserName();
-        var newName = prompt('請輸入你的名字（用來標記「誰正在複盤」，之後這台手機的複盤操作都會自動帶上這個名字）：', currentName || '');
+        var newName = prompt('請輸入你的名字（用來標記「這格是誰盤的」，之後這台手機的初盤／複盤操作都會自動帶上這個名字）：', currentName || '');
         if(newName === null) return; // 取消
         setRecountUserName(newName);
-        showToast(newName.trim() ? '已設定複盤身分為「'+newName.trim()+'」' : '已清空複盤身分');
+        showToast(newName.trim() ? '已設定盤點身分為「'+newName.trim()+'」' : '已清空盤點身分');
         render();
       }
 
@@ -2825,6 +2834,7 @@ function bindEvents(){
         state.curColorIdx = 0;
         state.curSizeIdx = 0;
         state.view = "counting";
+        ensureRecountUserName();
         render();
       }
 
