@@ -104,6 +104,20 @@
   }
   .list-row .left{ flex:1; }
   .chev{ color:var(--muted); font-size:14px; }
+  .identity-row{
+    display:flex; align-items:center; justify-content:space-between;
+    width:100%; text-align:left;
+    padding:15px 14px;
+    margin-bottom:8px;
+    border:1.5px solid var(--line);
+    border-radius:12px;
+    background:var(--card);
+    color:var(--ink);
+    font-size:16px; font-weight:600;
+    cursor:pointer;
+    font-family:inherit;
+  }
+  .identity-row:active{ background:#f1ece1; border-color:var(--accent); }
   .btn{
     display:block; width:100%;
     background:var(--accent);
@@ -542,7 +556,9 @@ var state = {
   recountFilter: "",    // 複盤清單的認領人篩選（空=全部）
   recountBrandFilter: "", // 複盤清單的品牌篩選（空=全部）
   claims: {},            // key 型號名稱 -> true（已認領，避免多人同時把同一型號登入ERP）。沒有這個 key = 未認領
-  view: "home",         // home | brandModels | setup | counting | summary | recount | claims
+  people: [],            // 人員名單（姓名陣列），供「複盤/盤點身分」選單使用
+  pickIdentityReturn: null, // 從 pickIdentity 頁選完（或取消）後要回去的畫面名稱
+  view: "home",         // home | brandModels | setup | counting | summary | recount | claims | pickIdentity
   curBrandName: "",
   curStyleIdx: 0,
   curColorIdx: 0,
@@ -760,9 +776,19 @@ function getRecountUserName(){
 function setRecountUserName(name){
   try{ localStorage.setItem(RECOUNT_USERNAME_KEY, (name || "").trim()); }catch(e){}
 }
-// 進盤點中／複盤頁前先確認這台手機有沒有設定過身分，沒有的話跳出一次視窗詢問，之後不會再問
+// 進盤點中／複盤頁前先確認這台手機有沒有設定過身分。呼叫前呼叫端會先把 state.view 設成想去的畫面：
+// 身分有效就留在原地；名單非空但沒身分（或身分是名單裡找不到的舊資料，例如手打的錯字/大小寫不符）就跳去
+// pickIdentity 選單重選一次，選完會自動回到這個畫面；名單是空的才退回原本的手動輸入，避免一開始被鎖死。
 function ensureRecountUserName(){
-  if(getRecountUserName()) return;
+  var nextView = state.view;
+  var current = getRecountUserName();
+  var hasPeople = state.people && state.people.length > 0;
+  if(current && (!hasPeople || state.people.indexOf(current) !== -1)) return;
+  if(hasPeople){
+    state.pickIdentityReturn = nextView;
+    state.view = "pickIdentity";
+    return;
+  }
   var name = prompt('請先輸入你的名字。\n\n之後這台手機的盤點操作（初盤、複盤填數字、正在複盤中）都會自動帶上這個名字，不用每格重打，之後也能隨時修改。');
   if(name !== null) setRecountUserName(name);
 }
@@ -893,6 +919,24 @@ async function clearClaimsRemote(){
     await apiPost({ action:"clearClaims" });
     state.claims = {};
   }catch(e){ console.error("clear claims failed", e); showToast("清空失敗，請檢查網路"); }
+}
+
+// ---------- 人員名單 API ----------
+// 給「複盤/盤點身分」選單用的同仁名單，管理者在「人員名單管理」維護，跟型號認領一樣走樂觀更新。
+async function addPersonRemote(name){
+  name = String(name || "").trim();
+  if(!name) return;
+  if(state.people.indexOf(name) === -1) state.people.push(name); // 本地先更新(樂觀更新)
+  try{
+    await apiPost({ action:"addPerson", name:name });
+  }catch(e){ console.error("add person failed", e); showToast("新增人員失敗，請檢查網路"); }
+}
+async function deletePersonRemote(name){
+  var idx = state.people.indexOf(name);
+  if(idx !== -1) state.people.splice(idx, 1);
+  try{
+    await apiPost({ action:"deletePerson", name:name });
+  }catch(e){ console.error("delete person failed", e); showToast("刪除人員失敗，請檢查網路"); }
 }
 
 // ---------- Init ----------
@@ -1066,6 +1110,7 @@ async function init(){
       if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
       if(all.recounts){ state.recounts = normalizeRecounts(all.recounts); }
       if(all.claims){ state.claims = all.claims; }
+      if(Array.isArray(all.people)){ state.people = all.people.map(String); }
     } else {
       fetchFailed = true;
     }
@@ -1193,6 +1238,7 @@ async function syncFromBackend(){
     var prevRecounts = state.recounts; // 存複盤頁就地更新用：跟同步前的舊資料比對哪些格子完成狀態有變
     if(all.recounts){ state.recounts = normalizeRecounts(all.recounts); }
     if(all.claims){ state.claims = all.claims; }
+    if(Array.isArray(all.people)){ state.people = all.people.map(String); }
 
     // 比對：跟目前的 state 比，看資料有沒有真的變動（避免無謂的「有新資料」提示）
     var newStructure = normalizeStructure(all.structure);
@@ -1351,7 +1397,44 @@ function render(){
   else if(state.view === "counting") app.innerHTML = renderCounting();
   else if(state.view === "summary") app.innerHTML = renderSummary();
   else if(state.view === "recount") app.innerHTML = renderRecount();
+  else if(state.view === "pickIdentity") app.innerHTML = renderPickIdentity();
   bindEvents();
+}
+
+// ---------- 選擇身分（從人員名單選「我是誰」，取代手動輸入） ----------
+function renderPickIdentity(){
+  return ''+
+  '<div class="topbar"><div class="topbar-row">'+
+    '<button class="icon-btn" data-action="pick-identity-cancel">‹ 返回</button>'+
+    '<div class="brand">選擇你的身分</div>'+
+    '<span style="width:60px"></span>'+
+  '</div></div>'+
+  '<main>'+
+    '<div class="field" style="margin-bottom:6px;">'+
+      '<label>搜尋姓名</label>'+
+      '<input type="text" id="identity-search" placeholder="輸入姓名關鍵字快速尋找..." autocomplete="off">'+
+    '</div>'+
+    '<div id="identity-list">'+renderIdentityListItems("")+'</div>'+
+  '</main>';
+}
+
+// 依搜尋關鍵字過濾人員清單，回傳清單 HTML；初次渲染跟輸入框即時過濾共用同一份邏輯
+function renderIdentityListItems(filterText){
+  var kw = String(filterText || "").trim().toLowerCase();
+  var current = getRecountUserName();
+  var names = state.people.filter(function(n){
+    return !kw || n.toLowerCase().indexOf(kw) !== -1;
+  });
+  if(names.length === 0){
+    return emptyStateHtml('找不到符合的人員', kw ? '換個關鍵字試試' : '尚未建立人員名單');
+  }
+  return names.map(function(n){
+    var isCurrent = n === current;
+    return '<button type="button" class="identity-row" data-action="pick-identity-select" data-name="'+escapeHtml(n)+'">'+
+      '<span>'+escapeHtml(n)+'</span>'+
+      (isCurrent ? '<span style="color:var(--accent-deep); font-size:12.5px; font-weight:700;">目前身分</span>' : '<span class="chev">›</span>')+
+    '</button>';
+  }).join("");
 }
 
 // 判斷使用者是否正在編輯複盤畫面的某個輸入框（複盤數字或認領人）。
@@ -1540,6 +1623,16 @@ function renderSetup(){
     return '<option value="'+escapeHtml(st.style)+'">'+escapeHtml(st.style)+(st.brand ? ' （目前：'+escapeHtml(st.brand)+'）' : ' （未分組）')+'</option>';
   }).join("");
 
+  // 「人員名單管理」清單：每人一列，右邊一顆刪除鈕
+  var peopleRows = state.people.length === 0
+    ? emptyStateHtml('尚未建立人員', '先在下面新增同仁姓名，之後大家進盤點/複盤頁就能直接選人')
+    : state.people.map(function(name){
+        return '<div class="list-row">'+
+          '<div class="left">'+escapeHtml(name)+'</div>'+
+          '<button class="icon-btn" data-action="delete-person" data-name="'+escapeHtml(name)+'" style="color:var(--accent-deep)">刪除</button>'+
+        '</div>';
+      }).join("");
+
   // 為「調整品牌順序」準備清單：取出目前實際有在用的品牌（依現行順序）
   var activeBrands = [];
   computeBrandGroups().forEach(function(g){
@@ -1632,6 +1725,16 @@ function renderSetup(){
         '<input type="text" id="rename-new" placeholder="例如：76000">'+
       '</div>'+
       '<button class="btn" data-action="rename-style">重新命名</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>人員名單管理</h2>'+
+      '<p class="sub">維護「複盤/盤點身分」選單裡可以選的人員名單。刪除人員不會影響這個人已經記錄過的盤點數字，只是名單裡不會再出現這個名字。</p>'+
+      peopleRows+
+      '<div class="field" style="margin-top:14px;">'+
+        '<label>新增人員姓名</label>'+
+        '<input type="text" id="new-person-name" placeholder="例如：王小明">'+
+      '</div>'+
+      '<button class="btn" data-action="add-person">新增人員</button>'+
     '</div>'+
     '<div class="panel">'+
       '<h2>整理原始資料（加快開啟速度）</h2>'+
@@ -2815,11 +2918,35 @@ function bindEvents(){
       }
 
       else if(action === 'change-recount-username'){
-        var currentName = getRecountUserName();
-        var newName = prompt('請輸入你的名字（用來標記「這格是誰盤的」，之後這台手機的初盤／複盤操作都會自動帶上這個名字）：', currentName || '');
-        if(newName === null) return; // 取消
-        setRecountUserName(newName);
-        showToast(newName.trim() ? '已設定盤點身分為「'+newName.trim()+'」' : '已清空盤點身分');
+        if(state.people && state.people.length > 0){
+          // 名單非空：走選單重選，選完（或按「返回」取消）都會回到目前這個畫面
+          state.pickIdentityReturn = state.view;
+          state.view = "pickIdentity";
+          render();
+        } else {
+          // 名單是空的，維持原本的手動輸入
+          var currentName = getRecountUserName();
+          var newName = prompt('請輸入你的名字（用來標記「這格是誰盤的」，之後這台手機的初盤／複盤操作都會自動帶上這個名字）：', currentName || '');
+          if(newName === null) return; // 取消
+          setRecountUserName(newName);
+          showToast(newName.trim() ? '已設定盤點身分為「'+newName.trim()+'」' : '已清空盤點身分');
+          render();
+        }
+      }
+
+      else if(action === 'pick-identity-select'){
+        var pickedName = el.getAttribute('data-name');
+        setRecountUserName(pickedName);
+        state.view = state.pickIdentityReturn || "home";
+        state.pickIdentityReturn = null;
+        showToast('已設定盤點身分為「'+pickedName+'」');
+        render();
+      }
+
+      else if(action === 'pick-identity-cancel'){
+        // 取消不變更身分，回到原本要去的畫面（跟舊版 prompt 按取消的行為一致：不擋住繼續使用）
+        state.view = state.pickIdentityReturn || "home";
+        state.pickIdentityReturn = null;
         render();
       }
 
@@ -3071,6 +3198,26 @@ function bindEvents(){
         render();
       }
 
+      else if(action === 'add-person'){
+        var personInput = document.getElementById('new-person-name');
+        var personName = personInput.value.trim();
+        if(!personName){ showToast("請輸入姓名"); return; }
+        if(state.people.indexOf(personName) !== -1){ showToast("「"+personName+"」已經在名單裡了"); return; }
+        await addPersonRemote(personName);
+        showToast("已新增「"+personName+"」");
+        render();
+      }
+
+      else if(action === 'delete-person'){
+        var delPersonName = el.getAttribute('data-name');
+        if(!confirm('確定要把「'+delPersonName+'」從人員名單刪除嗎？\n\n這個人過去已經記錄過的盤點資料不會受影響，只是名單裡不會再出現這個名字。')){
+          return;
+        }
+        await deletePersonRemote(delPersonName);
+        showToast("已刪除「"+delPersonName+"」");
+        render();
+      }
+
       else if(action === 'move-brand-up' || action === 'move-brand-down'){
         var brand = el.getAttribute('data-brand');
         // 取得目前實際使用中的品牌順序
@@ -3256,6 +3403,12 @@ function bindEvents(){
     // 每打一個字就即時更新加總，連「還沒按+、還沒換格」的最後一個數字也算進去
     app.addEventListener('input', function(ev){
       var t = ev.target;
+      // 選擇身分頁的搜尋框：打字即時過濾，只換清單區塊的 HTML，不整頁重畫，輸入框才不會失焦
+      if(t && t.id === 'identity-search'){
+        var listEl = document.getElementById('identity-list');
+        if(listEl) listEl.innerHTML = renderIdentityListItems(t.value);
+        return;
+      }
       if(t && t.classList && t.classList.contains('expr-newinput')){
         refreshSum();
       }
