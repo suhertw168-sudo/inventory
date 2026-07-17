@@ -333,14 +333,26 @@
   }
   .chip-editor .ce-btn.primary{ background:var(--accent); color:#fff; border-color:var(--accent); }
   .chip-editor .ce-btn.danger{ color:#a32d2d; border-color:#e3a89a; }
-  /* 彙總明細的複盤備註編輯器：借用 .chip-editor 的底色/邊框，這裡只補文字對齊跟 textarea 樣式 */
-  .summary-note-editor{ text-align:left; white-space:normal; }
-  .summary-note-editor textarea{
-    display:block; width:160px; max-width:100%; font-size:13px; padding:6px 8px;
-    border:1.5px solid var(--line); border-radius:6px; font-family:inherit;
-    resize:vertical; color:var(--ink); background:#fff;
+  /* 彙總明細的複盤備註視窗：fixed 置中，跟表格的橫向捲動位置完全無關，不管使用者橫拉到哪都出現在螢幕正中央 */
+  .modal-overlay{
+    position:fixed; top:0; right:0; bottom:0; left:0; z-index:50;
+    background:rgba(27,31,35,0.5);
+    display:none; align-items:center; justify-content:center;
+    padding:20px;
   }
-  .summary-note-actions{ display:flex; gap:6px; margin-top:8px; justify-content:flex-end; }
+  .modal-box{
+    background:var(--card); border-radius:16px; padding:20px;
+    width:100%; max-width:420px;
+    box-shadow:0 8px 32px rgba(0,0,0,0.3);
+  }
+  .modal-title{ font-size:15px; font-weight:800; color:var(--ink); margin-bottom:12px; }
+  .modal-textarea{
+    display:block; width:100%; min-height:130px; font-size:15px; padding:12px;
+    border:1.5px solid var(--line); border-radius:10px; font-family:inherit;
+    color:var(--ink); background:#fff; resize:vertical;
+  }
+  .modal-actions{ display:flex; gap:10px; margin-top:16px; }
+  .modal-actions .btn{ flex:1; }
   .sum-row{
     display:flex; align-items:center; justify-content:space-between;
     background:#f1ece1; border-radius:12px;
@@ -602,6 +614,19 @@
 <div class="toast" id="toast"></div>
 <div class="save-error-panel" id="save-error-panel"></div>
 
+<!-- 彙總明細的複盤備註視窗：獨立放在 #app 之外，render() 只會替換 #app 的內容，
+     所以這個彈窗完全不受表格重畫、橫向捲動位置影響，開關都是直接操作這裡的 DOM，不觸發 render() -->
+<div class="modal-overlay" id="summary-note-modal">
+  <div class="modal-box">
+    <div class="modal-title" id="summary-note-modal-title"></div>
+    <textarea class="modal-textarea" id="summary-note-modal-textarea" rows="5"></textarea>
+    <div class="modal-actions">
+      <button type="button" class="btn secondary" id="summary-note-modal-close">關閉</button>
+      <button type="button" class="btn" id="summary-note-modal-save">儲存</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function(){
 
@@ -628,7 +653,6 @@ var state = {
   assignStep: "target",  // 指派頁目前在哪一步："target"=選人 | "checklist"=勾格子
   assignExpandedBrands: {}, // 指派頁勾選清單目前展開的品牌 -> true（用 state 記，checkbox 勾選會整頁重畫，DOM class 記不住）
   assignExpandedStyles: {}, // 指派頁勾選清單目前展開的型號 -> true
-  summaryNoteOpenKeys: {}, // 彙總明細目前展開複盤備註編輯器的格子 key -> true（預設全部收合，避免明細被撐長）
   pickIdentityReturn: null, // 從 pickIdentity 頁選完（或取消）後要回去的畫面名稱
   view: "home",         // home | brandModels | setup | counting | summary | recount | claims | pickIdentity | assign
   curBrandName: "",
@@ -835,6 +859,55 @@ function renderSaveErrorPanel(){
 window.addEventListener('online', function(){
   Object.keys(state.failedSaveKeys).forEach(function(key){ retryFailedSave(key); });
 });
+
+// ---------- 彙總明細的複盤備註視窗 ----------
+// 這個彈窗是 #app 之外的靜態 DOM（見 body），開關都是直接操作 DOM、不call render()，
+// 所以完全不會讓表格重畫或橫向捲動位置跑掉。目標格子的 style/color/size 存在 dataset 上，
+// 不放進 state——這個視窗本來就是跟 render() 無關的獨立小工具，混進 state 反而增加不必要的耦合。
+function openRecountNoteModal(style, color, size){
+  var modal = document.getElementById('summary-note-modal');
+  var title = document.getElementById('summary-note-modal-title');
+  var textarea = document.getElementById('summary-note-modal-textarea');
+  if(!modal || !textarea) return;
+  var key = keyFor(style, color, size);
+  var existingNote = String((state.recounts[key] && state.recounts[key].note) || "");
+  modal.dataset.style = style;
+  modal.dataset.color = color;
+  modal.dataset.size = size;
+  if(title) title.textContent = style + ' - ' + color + ' - ' + size;
+  textarea.value = existingNote;
+  modal.style.display = 'flex';
+  textarea.focus();
+}
+function closeRecountNoteModal(){
+  var modal = document.getElementById('summary-note-modal');
+  if(modal) modal.style.display = 'none';
+}
+(function(){
+  var modal = document.getElementById('summary-note-modal');
+  var closeBtn = document.getElementById('summary-note-modal-close');
+  var saveBtn = document.getElementById('summary-note-modal-save');
+  if(closeBtn){
+    closeBtn.addEventListener('click', function(){ closeRecountNoteModal(); }); // 關閉不儲存
+  }
+  if(modal){
+    // 點背景（不是內容框）也關閉，是常見的彈窗習慣，一樣不儲存
+    modal.addEventListener('click', function(ev){
+      if(ev.target === modal) closeRecountNoteModal();
+    });
+  }
+  if(saveBtn){
+    saveBtn.addEventListener('click', async function(){
+      var style = modal.dataset.style, color = modal.dataset.color, size = modal.dataset.size;
+      var textarea = document.getElementById('summary-note-modal-textarea');
+      var noteVal = textarea ? textarea.value.trim() : "";
+      await saveRecountNoteRemote(style, color, size, noteVal); // 既有 API，內建樂觀更新跟失敗 toast
+      closeRecountNoteModal();
+      showToast('已儲存備註');
+      render_keepExpanded(); // 更新彙總明細上的「✎備註」／「✎有備註」標籤
+    });
+  }
+})();
 async function clearAllCountsRemote(){
   try{
     await apiPost({ action:"clearCounts" });
@@ -2383,27 +2456,16 @@ function renderSummary(){
         var isMarked = !!state.recounts[key];
         var recountCell;
         if(isMarked){
-          // key in 人員是唯一知道 ERP 差異線索的人（例如「差1箱，可能庫存漏點」），這裡順勢讓他直接記下來，
-          // 備註走既有的 saveRecountNote，跟複盤頁是同一份資料，不用另外做同步。不常駐輸入框，點了才展開。
+          // key in 人員是唯一知道 ERP 差異線索的人（例如「差1箱，可能庫存漏點」），這裡讓他能直接記下來。
+          // 備註編輯走置中彈出的視窗（見 openRecountNoteModal），不是格子內展開——表格有橫向捲動，
+          // 展開在格子裡常常會落在螢幕外找不到，改用 fixed 定位的彈窗就不受橫向捲動位置影響。
           var rNote = String((state.recounts[key] && state.recounts[key].note) || "").trim();
-          var noteOpen = !!state.summaryNoteOpenKeys[key];
-          var noteBtnHtml = noteOpen ? '' :
-            '<button class="mini-btn'+(rNote?' marked':'')+'" data-action="toggle-recount-note" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">'+(rNote?'✎有備註':'✎備註')+'</button>';
-          var noteEditorHtml = noteOpen
-            ? '<div class="chip-editor summary-note-editor">'+
-                '<textarea class="summary-note-input" rows="2" placeholder="例如：差1箱，可能庫存漏點">'+escapeHtml(rNote)+'</textarea>'+
-                '<div class="summary-note-actions">'+
-                  '<button class="ce-btn primary" data-action="save-recount-note-summary" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">存備註</button>'+
-                  '<button class="ce-btn" data-action="toggle-recount-note" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">收合</button>'+
-                '</div>'+
-              '</div>'
-            : '';
+          var noteBtnHtml = '<button class="mini-btn'+(rNote?' marked':'')+'" data-action="open-recount-note-modal" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">'+(rNote?'✎有備註':'✎備註')+'</button>';
           recountCell = '<td class="num" style="white-space:nowrap;">'+
             '<div style="display:flex; flex-direction:column; gap:4px; align-items:flex-end;">'+
               '<button class="mini-btn marked" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">✓已標記複盤(點擊取消)</button>'+
               noteBtnHtml+
             '</div>'+
-            noteEditorHtml+
           '</td>';
         } else {
           recountCell = '<td class="num" style="white-space:nowrap;"><button class="mini-btn" data-action="mark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">標記複盤</button></td>';
@@ -3575,11 +3637,11 @@ function bindEvents(){
         // 不問指派,直接加入清單(認領制:之後有空的人自己填名字)
         // 不 await：markRecountRemote 內部本地狀態已經樂觀更新過了，畫面立刻反映，網路請求在背景送出
         markRecountRemote(style, color, size, "");
-        // 標記成功順勢展開備註輸入：key in 人員是唯一知道 ERP 差異線索的人（例如「差1箱，可能庫存漏點」），
-        // 讓他可以當下直接記下來，也可以按「收合」跳過。備註走既有的 saveRecountNote，複盤頁自然看得到。
-        state.summaryNoteOpenKeys[keyFor(style, color, size)] = true;
         showToast('已加入複盤清單');
         render_keepExpanded(); // 停留原畫面，不收合目前展開的品牌／型號
+        // 標記成功順勢彈出備註視窗：key in 人員是唯一知道 ERP 差異線索的人（例如「差1箱，可能庫存漏點」），
+        // 讓他可以當下直接記下來，關閉不儲存也沒關係。備註走既有的 saveRecountNote，複盤頁自然看得到。
+        openRecountNoteModal(style, color, size);
       }
 
       else if(action === 'unmark-recount'){
@@ -3592,28 +3654,14 @@ function bindEvents(){
           return;
         }
         unmarkRecountRemote(style, color, size);
-        delete state.summaryNoteOpenKeys[keyFor(style, color, size)];
         showToast('已取消複盤標記');
         render_keepExpanded();
       }
 
-      else if(action === 'toggle-recount-note'){
-        var tnKey = keyFor(el.getAttribute('data-style'), el.getAttribute('data-color'), el.getAttribute('data-size'));
-        state.summaryNoteOpenKeys[tnKey] = !state.summaryNoteOpenKeys[tnKey];
-        render_keepExpanded();
-      }
-
-      else if(action === 'save-recount-note-summary'){
-        var snStyle = el.getAttribute('data-style');
-        var snColor = el.getAttribute('data-color');
-        var snSize = el.getAttribute('data-size');
-        var noteWrapper = el.closest('.summary-note-editor');
-        var noteTextarea = noteWrapper ? noteWrapper.querySelector('textarea') : null;
-        var noteVal = noteTextarea ? noteTextarea.value.trim() : "";
-        await saveRecountNoteRemote(snStyle, snColor, snSize, noteVal);
-        state.summaryNoteOpenKeys[keyFor(snStyle, snColor, snSize)] = false;
-        showToast('已儲存備註');
-        render_keepExpanded();
+      else if(action === 'open-recount-note-modal'){
+        // 只是打開一個獨立於 #app 之外的 fixed 彈窗，不觸發任何重畫，
+        // 表格的橫向捲動位置、展開狀態都完全不受影響（見 openRecountNoteModal）
+        openRecountNoteModal(el.getAttribute('data-style'), el.getAttribute('data-color'), el.getAttribute('data-size'));
       }
 
       else if(action === 'unmark-recount-confirm'){
