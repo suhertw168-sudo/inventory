@@ -658,7 +658,7 @@ var state = {
   people: [],            // 人員名單（姓名陣列），供「複盤/盤點身分」選單使用
   managers: [],          // 主管名單（姓名陣列），從人員名單中挑選，判定 isManager() 用
   assignments: {},       // key "style|color|size" -> 指派給的姓名，複盤分配用，跟「複盤人」(recounts[key].assignee) 是不同概念
-  brandOwners: {},       // 品牌名稱 -> 負責人姓名，第二輪複盤導向指派用
+  brandOwners: {},       // 品牌名稱 -> [負責人1, 負責人2]（固定兩格，沒設定是空字串），第二輪複盤導向指派用
   assignSelectedName: "", // 指派頁目前選定要指派的對象（暫存，離開頁面不特別清除，方便連續指派給同一人）
   assignChecked: {},     // 指派頁目前勾選要指派的格子 key -> true（暫存，進頁面時會重設）
   assignStep: "target",  // 指派頁目前在哪一步："target"=選人 | "checklist"=勾格子
@@ -1232,16 +1232,24 @@ async function deleteManagerRemote(name){
 
 // ---------- 品牌負責人 API ----------
 // 給「第二輪複盤」導向指派用：格子進入第二輪時，指派頁會提醒優先派給這個品牌的負責人。
-async function setBrandOwnerRemote(brand, name){
-  state.brandOwners[brand] = name; // 本地先更新(樂觀更新)，已存在就直接覆蓋(等同更新)
+// slot 是 1 或 2，對應第一位/第二位負責人；name 留空等於清空這個位置
+async function setBrandOwnerRemote(brand, slot, name){
+  var arr = (state.brandOwners[brand] || ["", ""]).slice();
+  arr[slot - 1] = name || "";
+  state.brandOwners[brand] = arr; // 本地先更新(樂觀更新)
   try{
-    await apiPost({ action:"setBrandOwner", brand:brand, name:name });
+    await apiPost({ action:"setBrandOwner", brand:brand, slot:slot, name:name });
   }catch(e){ console.error("set brand owner failed", e); showToast("設定品牌負責人失敗，請檢查網路"); }
 }
-async function deleteBrandOwnerRemote(brand){
-  delete state.brandOwners[brand];
+async function deleteBrandOwnerRemote(brand, slot){
+  if(state.brandOwners[brand]){
+    var arr = state.brandOwners[brand].slice();
+    arr[slot - 1] = "";
+    if(!arr[0] && !arr[1]){ delete state.brandOwners[brand]; }
+    else { state.brandOwners[brand] = arr; }
+  }
   try{
-    await apiPost({ action:"deleteBrandOwner", brand:brand });
+    await apiPost({ action:"deleteBrandOwner", brand:brand, slot:slot });
   }catch(e){ console.error("delete brand owner failed", e); showToast("移除品牌負責人失敗，請檢查網路"); }
 }
 
@@ -1390,12 +1398,19 @@ function normalizeAssignments(assignments){
 
 // 品牌負責人的 key(品牌)/值(姓名)都強制轉字串，理由同 normalizeAssignments：避免品牌或姓名
 // 剛好是純數字，被 Google Sheet 存成 number 型別，比對時整頁掛掉
+// 每個品牌對應一個固定兩格的陣列 [負責人1, 負責人2]，沒設定的那格是空字串——保留「位置」才能分辨
+// 第一位/第二位分別是誰，管理設定頁的「移除第一位/第二位」才能各自獨立操作。強制轉字串理由同其他
+// normalize 函式：避免姓名剛好是純數字被 Google Sheet 存成 number 型別，比對時整頁掛掉。
 function normalizeBrandOwners(brandOwners){
   if(!brandOwners || typeof brandOwners !== 'object') return brandOwners || {};
   var out = {};
   Object.keys(brandOwners).forEach(function(k){
     var v = brandOwners[k];
-    out[String(k)] = (v !== null && v !== undefined) ? String(v) : v;
+    var arr = Array.isArray(v) ? v : (v !== null && v !== undefined ? [v] : []);
+    out[String(k)] = [
+      (arr[0] !== null && arr[0] !== undefined) ? String(arr[0]) : "",
+      (arr[1] !== null && arr[1] !== undefined) ? String(arr[1]) : ""
+    ];
   });
   return out;
 }
@@ -1871,8 +1886,9 @@ function renderAssignChecklistStep(){
     // 沒設定就顯示「未設定負責人」，方便主管指派時知道優先要派給誰(見 assign-submit 的提醒邏輯)。
     var secondRoundTagHtml = "";
     if(isSecondRoundRecount(rowR)){
-      var rowOwner = state.brandOwners[brandOfKey(k)] || "";
-      secondRoundTagHtml = '<span class="assign-round-tag">⚠ 第二輪，負責人：'+escapeHtml(rowOwner || "未設定負責人")+'</span>';
+      var rowOwners = (state.brandOwners[brandOfKey(k)] || []).filter(function(n){ return !!n; });
+      var rowOwnerText = rowOwners.length > 0 ? rowOwners.join('、') : "未設定負責人";
+      secondRoundTagHtml = '<span class="assign-round-tag">⚠ 第二輪，負責人：'+escapeHtml(rowOwnerText)+'</span>';
     }
     var assignedTo = String(state.assignments[k] || "").trim();
     if(assignedTo){
@@ -2185,22 +2201,29 @@ function renderSetup(){
     if(g.brand !== null && activeBrands.indexOf(g.brand) === -1) activeBrands.push(g.brand);
   });
 
-  // 「品牌負責人」清單：每個已設定的品牌一列，右邊一顆移除鈕
+  // 「品牌負責人」清單：每個已設定的品牌一列，第一位/第二位各自顯示、各自一顆移除鈕（沒設的那位不顯示移除鈕）
   var brandOwnerEntries = Object.keys(state.brandOwners);
   var brandOwnerRows = brandOwnerEntries.length === 0
     ? emptyStateHtml('尚未設定品牌負責人', '從下面選單挑品牌跟負責人')
     : brandOwnerEntries.map(function(b){
+        var owners = state.brandOwners[b];
+        var slot1 = owners[0] || "", slot2 = owners[1] || "";
         return '<div class="list-row">'+
-          '<div class="left">'+escapeHtml(b)+' → '+escapeHtml(state.brandOwners[b])+'</div>'+
-          '<button class="icon-btn" data-action="delete-brand-owner" data-brand="'+escapeHtml(b)+'" style="color:var(--accent-deep)">移除</button>'+
+          '<div class="left">'+escapeHtml(b)+
+            '<div class="meta">第一位：'+(slot1?escapeHtml(slot1):'未設定')+'　第二位：'+(slot2?escapeHtml(slot2):'未設定')+'</div>'+
+          '</div>'+
+          '<div style="display:flex; flex-direction:column; gap:4px;">'+
+            (slot1 ? '<button class="icon-btn" data-action="delete-brand-owner" data-brand="'+escapeHtml(b)+'" data-slot="1" style="color:var(--accent-deep)">移除第一位</button>' : '')+
+            (slot2 ? '<button class="icon-btn" data-action="delete-brand-owner" data-brand="'+escapeHtml(b)+'" data-slot="2" style="color:var(--accent-deep)">移除第二位</button>' : '')+
+          '</div>'+
         '</div>';
       }).join("");
-  // 品牌選單用「目前實際有在用」的品牌(跟上面調整順序同一份清單)；已經設過負責人的品牌也留著，
-  // 選同一個品牌再設定一次就是更新(setBrandOwner 後端是 upsert)
+  // 品牌選單用「目前實際有在用」的品牌(跟上面調整順序同一份清單)
   var brandOwnerBrandOptions = activeBrands.map(function(b){
-    return '<option value="'+escapeHtml(b)+'">'+escapeHtml(b)+(state.brandOwners[b] ? '（目前：'+escapeHtml(state.brandOwners[b])+'）' : '')+'</option>';
+    return '<option value="'+escapeHtml(b)+'">'+escapeHtml(b)+'</option>';
   }).join("");
-  var brandOwnerPeopleOptions = state.people.map(function(name){
+  // 人員選單留一個空選項，選空的再按「設定」等於清空那個位置，不用另外找移除鈕
+  var brandOwnerPeopleOptions = '<option value="">（不設定）</option>' + state.people.map(function(name){
     return '<option value="'+escapeHtml(name)+'">'+escapeHtml(name)+'</option>';
   }).join("");
   var brandOrderRows = activeBrands.length === 0
@@ -2315,23 +2338,26 @@ function renderSetup(){
     '</div>'+
     '<div class="panel">'+
       '<h2>品牌負責人</h2>'+
-      '<p class="sub">設定每個品牌的負責人。複盤進入第二輪時，指派頁會標示這個品牌的負責人，並在指派給別人時提醒一次（不強制鎖，主管仍可指派給別人）。選同一個品牌再設定一次就是更新。</p>'+
+      '<p class="sub">每個品牌最多設定兩位負責人。複盤進入第二輪時，指派頁會標示這個品牌的負責人，指派給非負責人時會提醒一次（不強制鎖，主管仍可指派給別人）。選單選「（不設定）」再按設定，等於清空那個位置。</p>'+
       brandOwnerRows+
       (activeBrands.length === 0
         ? '<p class="sub" style="margin-top:14px;">請先設定至少一個品牌（見上方「調整品牌顯示順序」或「設定款式所屬品牌」）。</p>'
         : state.people.length === 0
           ? '<p class="sub" style="margin-top:14px;">請先在上面「人員名單管理」新增人員，才能挑人當負責人。</p>'
-          : '<div class="row-gap" style="margin-top:14px;">'+
-              '<div class="field" style="margin-bottom:0;">'+
-                '<label>品牌</label>'+
-                '<select id="brand-owner-brand">'+brandOwnerBrandOptions+'</select>'+
-              '</div>'+
-              '<div class="field" style="margin-bottom:0;">'+
-                '<label>負責人</label>'+
-                '<select id="brand-owner-name">'+brandOwnerPeopleOptions+'</select>'+
-              '</div>'+
+          : '<div class="field" style="margin-top:14px;">'+
+              '<label>品牌</label>'+
+              '<select id="brand-owner-brand">'+brandOwnerBrandOptions+'</select>'+
             '</div>'+
-            '<button class="btn" data-action="set-brand-owner" style="margin-top:10px;">設定負責人</button>')+
+            '<div class="field">'+
+              '<label>第一位負責人</label>'+
+              '<select id="brand-owner-name-1">'+brandOwnerPeopleOptions+'</select>'+
+            '</div>'+
+            '<button class="btn" data-action="set-brand-owner" data-slot="1">設定第一位</button>'+
+            '<div class="field" style="margin-top:14px;">'+
+              '<label>第二位負責人（可留空）</label>'+
+              '<select id="brand-owner-name-2">'+brandOwnerPeopleOptions+'</select>'+
+            '</div>'+
+            '<button class="btn secondary" data-action="set-brand-owner" data-slot="2">設定第二位</button>')+
     '</div>'+
     '<div class="panel">'+
       '<h2>整理原始資料（加快開啟速度）</h2>'+
@@ -3779,19 +3805,22 @@ function bindEvents(){
         var keysToAssign = Object.keys(state.assignChecked).filter(function(k){ return state.assignChecked[k]; });
         if(keysToAssign.length === 0){ showToast('請勾選要指派的格子'); return; }
 
-        // 第二輪格子的指派建議：目前選的人不是負責人，先提醒一次，不強制鎖，主管仍可例外改派
+        // 第二輪格子的指派建議：目前選的人不是兩位負責人的任一位，先提醒一次，不強制鎖，主管仍可例外改派
         var mismatchedBrands = [];
         keysToAssign.forEach(function(k){
           var kr = state.recounts[k];
           if(!isSecondRoundRecount(kr)) return;
           var kb = brandOfRecountKey(k);
-          var kOwner = state.brandOwners[kb] || "";
-          if(kOwner && kOwner !== state.assignSelectedName && mismatchedBrands.indexOf(kb) === -1){
+          var kOwners = (state.brandOwners[kb] || []).filter(function(n){ return !!n; });
+          if(kOwners.length > 0 && kOwners.indexOf(state.assignSelectedName) === -1 && mismatchedBrands.indexOf(kb) === -1){
             mismatchedBrands.push(kb);
           }
         });
         if(mismatchedBrands.length > 0){
-          var ownerList = mismatchedBrands.map(function(b){ return b+'（負責人：'+state.brandOwners[b]+'）'; }).join('、');
+          var ownerList = mismatchedBrands.map(function(b){
+            var bOwners = (state.brandOwners[b] || []).filter(function(n){ return !!n; });
+            return b+'（建議：'+bOwners.join('或')+'）';
+          }).join('、');
           if(!confirm('以下品牌的格子是第二輪複盤，建議指派給負責人：\n'+ownerList+'\n\n仍要指派給「'+state.assignSelectedName+'」嗎？')){
             return;
           }
@@ -4182,23 +4211,29 @@ function bindEvents(){
       }
 
       else if(action === 'set-brand-owner'){
+        var boSlot = el.getAttribute('data-slot'); // "1" 或 "2"
+        var boSlotLabel = boSlot === '2' ? '第二位' : '第一位';
         var boBrandSelect = document.getElementById('brand-owner-brand');
-        var boNameSelect = document.getElementById('brand-owner-name');
+        var boNameSelect = document.getElementById('brand-owner-name-'+boSlot);
         var boBrand = boBrandSelect ? boBrandSelect.value : "";
         var boName = boNameSelect ? boNameSelect.value : "";
-        if(!boBrand || !boName){ showToast("請選擇品牌跟負責人"); return; }
-        await setBrandOwnerRemote(boBrand, boName);
-        showToast("已將「"+boBrand+"」的負責人設為「"+boName+"」");
+        if(!boBrand){ showToast("請選擇品牌"); return; }
+        await setBrandOwnerRemote(boBrand, Number(boSlot), boName);
+        showToast(boName
+          ? "已將「"+boBrand+"」的"+boSlotLabel+"負責人設為「"+boName+"」"
+          : "已清空「"+boBrand+"」的"+boSlotLabel+"負責人");
         render();
       }
 
       else if(action === 'delete-brand-owner'){
         var delBoBrand = el.getAttribute('data-brand');
-        if(!confirm('確定要移除「'+delBoBrand+'」的負責人設定嗎？')){
+        var delBoSlot = el.getAttribute('data-slot'); // "1" 或 "2"
+        var delBoSlotLabel = delBoSlot === '2' ? '第二位' : '第一位';
+        if(!confirm('確定要移除「'+delBoBrand+'」'+delBoSlotLabel+'負責人設定嗎？')){
           return;
         }
-        await deleteBrandOwnerRemote(delBoBrand);
-        showToast("已移除「"+delBoBrand+"」的負責人設定");
+        await deleteBrandOwnerRemote(delBoBrand, Number(delBoSlot));
+        showToast("已移除「"+delBoBrand+"」"+delBoSlotLabel+"負責人設定");
         render();
       }
 
