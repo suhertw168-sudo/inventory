@@ -2461,14 +2461,15 @@ function renderSummary(){
           // 展開在格子裡常常會落在螢幕外找不到，改用 fixed 定位的彈窗就不受橫向捲動位置影響。
           var rNote = String((state.recounts[key] && state.recounts[key].note) || "").trim();
           var noteBtnHtml = '<button class="mini-btn'+(rNote?' marked':'')+'" data-action="open-recount-note-modal" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">'+(rNote?'✎有備註':'✎備註')+'</button>';
+          // 按鈕文字盡量短：欄寬是由這欄最寬的子元素撐出來的，文字越短欄位越窄，橫向捲動距離越少
           recountCell = '<td class="num" style="white-space:nowrap;">'+
             '<div style="display:flex; flex-direction:column; gap:4px; align-items:flex-end;">'+
-              '<button class="mini-btn marked" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">✓已標記複盤(點擊取消)</button>'+
+              '<button class="mini-btn marked" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已標記</button>'+
               noteBtnHtml+
             '</div>'+
           '</td>';
         } else {
-          recountCell = '<td class="num" style="white-space:nowrap;"><button class="mini-btn" data-action="mark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">標記複盤</button></td>';
+          recountCell = '<td class="num" style="white-space:nowrap;"><button class="mini-btn" data-action="mark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">標記</button></td>';
         }
         html += '<tr'+rowStyle+'>'+colorCell+'<td>'+escapeHtml(sz)+'</td>'+
           shelfCell + stockCell +
@@ -3645,8 +3646,8 @@ function bindEvents(){
       }
 
       else if(action === 'unmark-recount'){
-        // 彙總明細的「已標記複盤(點擊取消)」按鈕：要不要複盤是 key in 人員依 ERP 比對在這裡決定的，
-        // 所以取消也在這裡做，需要二次確認避免手滑誤按（見 buildUnmarkRecountConfirmMessage）
+        // 彙總明細的「已標記」按鈕：要不要複盤是 key in 人員依 ERP 比對在這裡決定的，
+        // 所以取消也在這裡做（點擊即取消），需要二次確認避免手滑誤按（見 buildUnmarkRecountConfirmMessage）
         var style = el.getAttribute('data-style');
         var color = el.getAttribute('data-color');
         var size = el.getAttribute('data-size');
