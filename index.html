@@ -438,6 +438,7 @@
   .recount-item .ri-num{ flex:1; text-align:center; }
   .recount-item .ri-num-label{ font-size:11px; color:var(--muted); font-weight:700; margin-bottom:4px; }
   .recount-item .ri-num-val{ font-size:20px; font-weight:800; }
+  .recount-item .ri-num-sub{ font-size:11px; color:var(--muted); font-weight:600; margin-top:2px; }
   .recount-item .ri-arrow{ color:var(--muted); font-size:16px; padding-bottom:6px; }
   .recount-item .ri-input{
     width:100%; font-size:20px; font-weight:800; text-align:center;
@@ -1090,8 +1091,14 @@ async function confirmRecountRemote(style, color, size){
   var confirmedBy = getRecountUserName();
   var prevRecount = r;
   var prevCount = state.counts[key];
+  // 快照確認「前」的初盤現值，讓已確認卡片還能看出「當初差了多少」——counts 馬上就會被複盤值蓋掉，
+  // 不先存起來這段歷史就查不到了（後端 confirmRecount 也會存一份，這裡是讓畫面立刻反映，不用等下次同步）
+  var beforeShelf = (prevCount && prevCount.shelf !== "" && prevCount.shelf !== null && prevCount.shelf !== undefined) ? prevCount.shelf : "";
+  var beforeStock = (prevCount && prevCount.stock !== "" && prevCount.stock !== null && prevCount.stock !== undefined) ? prevCount.stock : "";
+  var beforeCountedBy = (prevCount && prevCount.countedBy) ? prevCount.countedBy : "";
   state.recounts[key] = Object.assign({}, r, {
-    confirmed: true, confirmedBy: confirmedBy, confirmedAt: new Date().toISOString()
+    confirmed: true, confirmedBy: confirmedBy, confirmedAt: new Date().toISOString(),
+    beforeShelf: beforeShelf, beforeStock: beforeStock, beforeCountedBy: beforeCountedBy
   });
   state.counts[key] = { shelf: shelfVal, stock: stockVal, total: shelfVal + stockVal, countedBy: confirmedBy };
   try{
@@ -1307,7 +1314,7 @@ function normalizeCounts(counts){
 // 複盤任務的文字欄位一律強制轉成字串型別，避免 Google Sheet 把某格內容存成 number
 // （例如身分名字剛好打成純數字）時，前端對這些欄位做 .trim()/.toLowerCase() 直接炸掉整頁。
 // 數字格位（架上複盤/庫存複盤）維持原樣，使用處本來就會另外用 String()/parseExpr 處理。
-var RECOUNT_TEXT_FIELDS = ["note","assignee","editingBy","lastEditBy","confirmedBy","relogBy"];
+var RECOUNT_TEXT_FIELDS = ["note","assignee","editingBy","lastEditBy","confirmedBy","relogBy","beforeCountedBy"];
 function normalizeRecounts(recounts){
   if(!recounts || typeof recounts !== 'object') return recounts || {};
   var out = {};
@@ -2657,15 +2664,22 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   var r = state.recounts[key];
   if(!r) return;
   var c = state.counts[key];
-  var firstShelf = c && c.shelf !== "" && c.shelf !== null && c.shelf !== undefined ? (Number(c.shelf)||0) : null;
-  var firstStock = c && c.stock !== "" && c.stock !== null && c.stock !== undefined ? (Number(c.stock)||0) : null;
+  // 已確認且有快照的格子改讀快照，不讀 state.counts——跟 buildRecountItem() 是同一套邏輯，
+  // 這裡另外複製一份是因為背景同步的就地更新完全不會經過 buildRecountItem()，兩邊都要改才不會
+  // 在下一輪同步時被這裡的舊邏輯把已經修好的「第一次」畫面蓋回去。
+  var hasSnapshot = !!r.confirmed && r.beforeShelf !== "" && r.beforeShelf !== null && r.beforeShelf !== undefined;
+  var firstSource = hasSnapshot ? { shelf: r.beforeShelf, stock: r.beforeStock, countedBy: r.beforeCountedBy } : c;
+  var firstShelf = firstSource && firstSource.shelf !== "" && firstSource.shelf !== null && firstSource.shelf !== undefined ? (Number(firstSource.shelf)||0) : null;
+  var firstStock = firstSource && firstSource.stock !== "" && firstSource.stock !== null && firstSource.stock !== undefined ? (Number(firstSource.stock)||0) : null;
   var firstTotal = (firstShelf !== null || firstStock !== null) ? ((firstShelf||0)+(firstStock||0)) : null;
-  var countedBy = (c && c.countedBy) ? String(c.countedBy).trim() : "";
+  var countedBy = (firstSource && firstSource.countedBy) ? String(firstSource.countedBy).trim() : "";
 
   var shelfRaw = (r.shelf !== null && r.shelf !== undefined) ? String(r.shelf) : "";
   var stockRaw = (r.stock !== null && r.stock !== undefined) ? String(r.stock) : "";
   var noteRaw = (r.note !== null && r.note !== undefined) ? String(r.note) : "";
-  var recountVal = isDoneNow ? (parseExpr(shelfRaw) + parseExpr(stockRaw)) : null;
+  var recountShelfValPatch = isDoneNow ? parseExpr(shelfRaw) : null;
+  var recountStockValPatch = isDoneNow ? parseExpr(stockRaw) : null;
+  var recountVal = isDoneNow ? (recountShelfValPatch + recountStockValPatch) : null;
 
   // 就地更新架上／庫存／備註三個輸入框本身：同一套迴圈邏輯，不要各寫各的（備註沒有算式提示，
   // 用 hasCalcHint 開關跳過那段就好，邏輯還是共用同一份）。
@@ -2698,11 +2712,33 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   });
 
   // 「第一次」跟「初盤：OO」都是唯讀顯示（沒有輸入框，不用防呆保護），直接同步成最新值即可，
-  // 避免 A 機重新初盤或改了初盤人之後，B 機這裡還卡著舊資料。
+  // 避免 A 機重新初盤或改了初盤人、或另一台手機確認回寫之後，B 機這裡還卡著舊資料。
   var firstValEl = itemEl.querySelector('.ri-first-val');
   if(firstValEl) firstValEl.textContent = (firstTotal !== null ? firstTotal : '—');
   var countedByEl = itemEl.querySelector('.ri-countedby');
   if(countedByEl) countedByEl.textContent = '初盤：' + (countedBy || '未記錄');
+
+  // 就地補上/移除「架上X／庫存Y」breakdown 小字跟「第一次（原）」標籤——有快照才顯示，
+  // 邏輯跟 buildRecountItem() 一致，這裡是背景同步時就地更新版本（不整段重畫、輸入框不受影響）
+  function syncNumSub(valEl, subText){
+    if(!valEl) return;
+    var numEl = valEl.closest('.ri-num');
+    if(!numEl) return;
+    var subEl = numEl.querySelector('.ri-num-sub');
+    if(subText){
+      if(!subEl){
+        subEl = document.createElement('div');
+        subEl.className = 'ri-num-sub';
+        numEl.appendChild(subEl);
+      }
+      subEl.textContent = subText;
+    } else if(subEl){
+      subEl.remove();
+    }
+  }
+  var firstLabelEl = firstValEl ? firstValEl.closest('.ri-num').querySelector('.ri-num-label') : null;
+  if(firstLabelEl) firstLabelEl.textContent = hasSnapshot ? '第一次（原）' : '第一次';
+  syncNumSub(firstValEl, hasSnapshot ? ('架上'+(firstShelf!==null?firstShelf:'—')+'／庫存'+(firstStock!==null?firstStock:'—')) : '');
 
   var diffHtml = "";
   if(firstTotal !== null && recountVal !== null){
@@ -2717,6 +2753,7 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   itemEl.classList.toggle('done', isDoneNow);
   var totalEl = itemEl.querySelector('.ri-total-val');
   if(totalEl) totalEl.textContent = (recountVal !== null ? recountVal : '—');
+  syncNumSub(totalEl, hasSnapshot ? ('架上'+(recountShelfValPatch!==null?recountShelfValPatch:'—')+'／庫存'+(recountStockValPatch!==null?recountStockValPatch:'—')) : '');
   var diffEl = itemEl.querySelector('.ri-diff-val');
   if(diffEl) diffEl.innerHTML = diffHtml;
 
@@ -3022,8 +3059,13 @@ function renderRecount(){
     var parts = k.split("|");
     var style = parts[0], color = parts[1], size = parts[2];
     var c = state.counts[k];
-    var firstShelf = c && c.shelf !== "" && c.shelf !== null && c.shelf !== undefined ? (Number(c.shelf)||0) : null;
-    var firstStock = c && c.stock !== "" && c.stock !== null && c.stock !== undefined ? (Number(c.stock)||0) : null;
+    // 已確認的格子改讀確認當下存的快照，不讀 state.counts——確認回寫是 append 進「_盤點原始資料」，
+    // counts 馬上就會變成複盤值本身，「第一次」如果還讀 counts 就會變成初盤=複盤、差異歸零，
+    // 稽核意義消失。沒有快照（這次改動之前就確認過的舊格子）或還沒確認，維持現行讀法，不報錯、不擋畫面。
+    var hasSnapshot = !!r.confirmed && r.beforeShelf !== "" && r.beforeShelf !== null && r.beforeShelf !== undefined;
+    var firstSource = hasSnapshot ? { shelf: r.beforeShelf, stock: r.beforeStock } : c;
+    var firstShelf = firstSource && firstSource.shelf !== "" && firstSource.shelf !== null && firstSource.shelf !== undefined ? (Number(firstSource.shelf)||0) : null;
+    var firstStock = firstSource && firstSource.stock !== "" && firstSource.stock !== null && firstSource.stock !== undefined ? (Number(firstSource.stock)||0) : null;
     var firstTotal = (firstShelf !== null || firstStock !== null) ? ((firstShelf||0)+(firstStock||0)) : null;
 
     var shelfRaw = (r.shelf !== null && r.shelf !== undefined) ? String(r.shelf) : "";
@@ -3081,9 +3123,13 @@ function renderRecount(){
         '</div>'+
       '</div>'+
       '<div class="ri-nums">'+
-        '<div class="ri-num"><div class="ri-num-label">第一次</div><div class="ri-num-val ri-first-val">'+(firstTotal!==null?firstTotal:'—')+'</div></div>'+
+        '<div class="ri-num"><div class="ri-num-label">'+(hasSnapshot?'第一次（原）':'第一次')+'</div><div class="ri-num-val ri-first-val">'+(firstTotal!==null?firstTotal:'—')+'</div>'+
+          (hasSnapshot ? '<div class="ri-num-sub">架上'+(firstShelf!==null?firstShelf:'—')+'／庫存'+(firstStock!==null?firstStock:'—')+'</div>' : '')+
+        '</div>'+
         '<div class="ri-arrow">→</div>'+
-        '<div class="ri-num"><div class="ri-num-label">複盤加總</div><div class="ri-num-val ri-total-val">'+(recountVal!==null?recountVal:'—')+'</div></div>'+
+        '<div class="ri-num"><div class="ri-num-label">複盤加總</div><div class="ri-num-val ri-total-val">'+(recountVal!==null?recountVal:'—')+'</div>'+
+          (hasSnapshot ? '<div class="ri-num-sub">架上'+(recountShelfVal!==null?recountShelfVal:'—')+'／庫存'+(recountStockVal!==null?recountStockVal:'—')+'</div>' : '')+
+        '</div>'+
         '<div class="ri-arrow">=</div>'+
         '<div class="ri-num"><div class="ri-num-label">差異</div><div class="ri-num-val ri-diff-val">'+diffHtml+'</div></div>'+
       '</div>'+
@@ -3640,9 +3686,7 @@ function bindEvents(){
         markRecountRemote(style, color, size, "");
         showToast('已加入複盤清單');
         render_keepExpanded(); // 停留原畫面，不收合目前展開的品牌／型號
-        // 標記成功順勢彈出備註視窗：key in 人員是唯一知道 ERP 差異線索的人（例如「差1箱，可能庫存漏點」），
-        // 讓他可以當下直接記下來，關閉不儲存也沒關係。備註走既有的 saveRecountNote，複盤頁自然看得到。
-        openRecountNoteModal(style, color, size);
+        // 標記完不自動彈備註視窗，只顯示「✎備註」按鈕，需要登打線索時再手動點開（見 open-recount-note-modal）
       }
 
       else if(action === 'unmark-recount'){
