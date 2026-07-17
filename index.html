@@ -557,6 +557,7 @@ var state = {
   recountBrandFilter: "", // 複盤清單的品牌篩選（空=全部）
   claims: {},            // key 型號名稱 -> true（已認領，避免多人同時把同一型號登入ERP）。沒有這個 key = 未認領
   people: [],            // 人員名單（姓名陣列），供「複盤/盤點身分」選單使用
+  managers: [],          // 主管名單（姓名陣列），從人員名單中挑選，判定 isManager() 用
   pickIdentityReturn: null, // 從 pickIdentity 頁選完（或取消）後要回去的畫面名稱
   view: "home",         // home | brandModels | setup | counting | summary | recount | claims | pickIdentity
   curBrandName: "",
@@ -776,6 +777,12 @@ function getRecountUserName(){
 function setRecountUserName(name){
   try{ localStorage.setItem(RECOUNT_USERNAME_KEY, (name || "").trim()); }catch(e){}
 }
+// 目前這台手機的身分是否為主管：跟人員名單相容性檢查同一套比對邏輯，字面完全相符才算
+function isManager(){
+  var current = getRecountUserName();
+  if(!current) return false;
+  return (state.managers || []).indexOf(current) !== -1;
+}
 // 進盤點中／複盤頁前先確認這台手機有沒有設定過身分。呼叫前呼叫端會先把 state.view 設成想去的畫面：
 // 身分有效就留在原地；名單非空但沒身分（或身分是名單裡找不到的舊資料，例如手打的錯字/大小寫不符）就跳去
 // pickIdentity 選單重選一次，選完會自動回到這個畫面；名單是空的才退回原本的手動輸入，避免一開始被鎖死。
@@ -934,9 +941,30 @@ async function addPersonRemote(name){
 async function deletePersonRemote(name){
   var idx = state.people.indexOf(name);
   if(idx !== -1) state.people.splice(idx, 1);
+  // 如果這個人同時是主管，本地也一併移除主管身分（後端 deletePerson 內部同樣會連動移除）
+  var mgrIdx = state.managers.indexOf(name);
+  if(mgrIdx !== -1) state.managers.splice(mgrIdx, 1);
   try{
     await apiPost({ action:"deletePerson", name:name });
   }catch(e){ console.error("delete person failed", e); showToast("刪除人員失敗，請檢查網路"); }
+}
+
+// ---------- 主管名單 API ----------
+// 主管是從人員名單中挑選出來的子集合，寫法比照人員名單 API，一樣走樂觀更新。
+async function addManagerRemote(name){
+  name = String(name || "").trim();
+  if(!name) return;
+  if(state.managers.indexOf(name) === -1) state.managers.push(name); // 本地先更新(樂觀更新)
+  try{
+    await apiPost({ action:"addManager", name:name });
+  }catch(e){ console.error("add manager failed", e); showToast("設定主管失敗，請檢查網路"); }
+}
+async function deleteManagerRemote(name){
+  var idx = state.managers.indexOf(name);
+  if(idx !== -1) state.managers.splice(idx, 1);
+  try{
+    await apiPost({ action:"deleteManager", name:name });
+  }catch(e){ console.error("delete manager failed", e); showToast("移除主管失敗，請檢查網路"); }
 }
 
 // ---------- Init ----------
@@ -1111,6 +1139,7 @@ async function init(){
       if(all.recounts){ state.recounts = normalizeRecounts(all.recounts); }
       if(all.claims){ state.claims = all.claims; }
       if(Array.isArray(all.people)){ state.people = all.people.map(String); }
+      if(Array.isArray(all.managers)){ state.managers = all.managers.map(String); }
     } else {
       fetchFailed = true;
     }
@@ -1239,6 +1268,7 @@ async function syncFromBackend(){
     if(all.recounts){ state.recounts = normalizeRecounts(all.recounts); }
     if(all.claims){ state.claims = all.claims; }
     if(Array.isArray(all.people)){ state.people = all.people.map(String); }
+    if(Array.isArray(all.managers)){ state.managers = all.managers.map(String); }
 
     // 比對：跟目前的 state 比，看資料有沒有真的變動（避免無謂的「有新資料」提示）
     var newStructure = normalizeStructure(all.structure);
@@ -1633,6 +1663,21 @@ function renderSetup(){
         '</div>';
       }).join("");
 
+  // 「主管設定」清單：每位主管一列，右邊一顆移除鈕
+  var managerRows = state.managers.length === 0
+    ? emptyStateHtml('尚未設定主管', '從下面選單挑一位既有人員，設為主管')
+    : state.managers.map(function(name){
+        return '<div class="list-row">'+
+          '<div class="left">'+escapeHtml(name)+'</div>'+
+          '<button class="icon-btn" data-action="delete-manager" data-name="'+escapeHtml(name)+'" style="color:var(--accent-deep)">移除</button>'+
+        '</div>';
+      }).join("");
+  // 主管候選人：人員名單裡「還不是主管」的人，不能手打，避免跟人員名單對不上
+  var managerCandidates = state.people.filter(function(name){ return state.managers.indexOf(name) === -1; });
+  var managerCandidateOptions = managerCandidates.map(function(name){
+    return '<option value="'+escapeHtml(name)+'">'+escapeHtml(name)+'</option>';
+  }).join("");
+
   // 為「調整品牌順序」準備清單：取出目前實際有在用的品牌（依現行順序）
   var activeBrands = [];
   computeBrandGroups().forEach(function(g){
@@ -1735,6 +1780,18 @@ function renderSetup(){
         '<input type="text" id="new-person-name" placeholder="例如：王小明">'+
       '</div>'+
       '<button class="btn" data-action="add-person">新增人員</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>主管設定</h2>'+
+      '<p class="sub">從人員名單中選人設為主管。主管在複盤頁會看到「複盤分配」功能，用來之後分派複盤工作給大家。移除主管不會刪除這個人的人員名單資料。</p>'+
+      managerRows+
+      (managerCandidates.length > 0
+        ? '<div class="field" style="margin-top:14px;">'+
+            '<label>從人員名單選擇要加為主管的人</label>'+
+            '<select id="new-manager-name">'+managerCandidateOptions+'</select>'+
+          '</div>'+
+          '<button class="btn" data-action="add-manager">設為主管</button>'
+        : '<p class="sub" style="margin-top:14px;">'+(state.people.length === 0 ? '請先在上面「人員名單管理」新增人員，才能挑人設為主管。' : '人員名單裡的人都已經是主管了。')+'</p>')+
     '</div>'+
     '<div class="panel">'+
       '<h2>整理原始資料（加快開啟速度）</h2>'+
@@ -2603,7 +2660,10 @@ function renderRecount(){
   '<main>'+
     '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 14px; margin-bottom:12px; background:#fcfbf8; border:1px solid var(--line); border-radius:10px; font-size:13px;">'+
       '<span style="color:var(--muted);">你的盤點身分：<strong style="color:var(--ink);">'+(getRecountUserName() ? escapeHtml(getRecountUserName()) : '尚未設定')+'</strong></span>'+
-      '<button class="mini-btn" data-action="change-recount-username">'+(getRecountUserName() ? '改名字' : '設定名字')+'</button>'+
+      '<div style="display:flex; gap:6px;">'+
+        (isManager() ? '<button class="mini-btn" data-action="recount-assign">複盤分配</button>' : '')+
+        '<button class="mini-btn" data-action="change-recount-username">'+(getRecountUserName() ? '改名字' : '設定名字')+'</button>'+
+      '</div>'+
     '</div>'+
     renderRecountProgressOverview()+
     '<div class="panel">'+
@@ -2934,6 +2994,11 @@ function bindEvents(){
         }
       }
 
+      else if(action === 'recount-assign'){
+        // 複盤分配（指派複盤工作給大家）留給第三階段做，這裡先只有按鈕
+        showToast('功能建置中');
+      }
+
       else if(action === 'pick-identity-select'){
         var pickedName = el.getAttribute('data-name');
         setRecountUserName(pickedName);
@@ -3215,6 +3280,25 @@ function bindEvents(){
         }
         await deletePersonRemote(delPersonName);
         showToast("已刪除「"+delPersonName+"」");
+        render();
+      }
+
+      else if(action === 'add-manager'){
+        var mgrSelect = document.getElementById('new-manager-name');
+        var mgrName = mgrSelect ? mgrSelect.value : "";
+        if(!mgrName){ showToast("請選擇要加為主管的人"); return; }
+        await addManagerRemote(mgrName);
+        showToast("已將「"+mgrName+"」設為主管");
+        render();
+      }
+
+      else if(action === 'delete-manager'){
+        var delMgrName = el.getAttribute('data-name');
+        if(!confirm('確定要移除主管「'+delMgrName+'」嗎？\n\n只會移除主管身分，這個人還是會留在人員名單裡。')){
+          return;
+        }
+        await deleteManagerRemote(delMgrName);
+        showToast("已移除主管「"+delMgrName+"」");
         render();
       }
 
