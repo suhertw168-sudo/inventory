@@ -333,6 +333,14 @@
   }
   .chip-editor .ce-btn.primary{ background:var(--accent); color:#fff; border-color:var(--accent); }
   .chip-editor .ce-btn.danger{ color:#a32d2d; border-color:#e3a89a; }
+  /* 彙總明細的複盤備註編輯器：借用 .chip-editor 的底色/邊框，這裡只補文字對齊跟 textarea 樣式 */
+  .summary-note-editor{ text-align:left; white-space:normal; }
+  .summary-note-editor textarea{
+    display:block; width:160px; max-width:100%; font-size:13px; padding:6px 8px;
+    border:1.5px solid var(--line); border-radius:6px; font-family:inherit;
+    resize:vertical; color:var(--ink); background:#fff;
+  }
+  .summary-note-actions{ display:flex; gap:6px; margin-top:8px; justify-content:flex-end; }
   .sum-row{
     display:flex; align-items:center; justify-content:space-between;
     background:#f1ece1; border-radius:12px;
@@ -620,6 +628,7 @@ var state = {
   assignStep: "target",  // 指派頁目前在哪一步："target"=選人 | "checklist"=勾格子
   assignExpandedBrands: {}, // 指派頁勾選清單目前展開的品牌 -> true（用 state 記，checkbox 勾選會整頁重畫，DOM class 記不住）
   assignExpandedStyles: {}, // 指派頁勾選清單目前展開的型號 -> true
+  summaryNoteOpenKeys: {}, // 彙總明細目前展開複盤備註編輯器的格子 key -> true（預設全部收合，避免明細被撐長）
   pickIdentityReturn: null, // 從 pickIdentity 頁選完（或取消）後要回去的畫面名稱
   view: "home",         // home | brandModels | setup | counting | summary | recount | claims | pickIdentity | assign
   curBrandName: "",
@@ -917,6 +926,24 @@ async function markRecountRemote(style, color, size, assignee){
   try{
     await apiPost({ action:"markRecount", style:style, color:color, size:size, assignee:assignee || "" });
   }catch(e){ console.error("mark recount failed", e); showToast("標記失敗，請檢查網路"); }
+}
+// 取消複盤標記前的確認訊息：依這一格目前的狀態(已確認回寫／已填數字但未確認／都還沒填)給不同警告，
+// 避免使用者手滑刪掉已經完成的工作。已確認的格子刪掉的只是「_複盤任務」這筆紀錄本身，
+// 已經回寫進彙總的數字不受影響(saveCount 是 append，不會因為這裡刪列就消失)；
+// 已填但未確認的格子刪掉就真的會遺失那些數字，需要更明確的警告。
+function buildUnmarkRecountConfirmMessage(style, color, size){
+  var key = keyFor(style, color, size);
+  var r = state.recounts[key] || {};
+  var hasData = String(r.shelf || "").trim() !== "" || String(r.stock || "").trim() !== "";
+  var msg = '確定要取消「'+style+' · '+color+' · '+size+'」的複盤標記嗎？';
+  if(r.confirmed){
+    msg += '\n\n⚠️ 這一格複盤已經確認回寫過彙總，取消只會刪除這筆複盤紀錄本身，不影響已經回寫進彙總的數字。';
+  } else if(hasData){
+    msg += '\n\n⚠️ 這一格已經填過複盤數字（還沒確認回寫），取消將一併刪除這些數字，無法復原。';
+  } else {
+    msg += '\n\n這只會移除複盤標記，不影響第一次盤點的資料。';
+  }
+  return msg + '\n\n此動作無法復原。';
 }
 async function unmarkRecountRemote(style, color, size){
   var key = keyFor(style, color, size);
@@ -2351,11 +2378,36 @@ function renderSummary(){
         var stockCell = stockFilled
           ? '<td class="num">'+stock+'</td>'
           : '<td class="num" style="color:#e87a3e; font-weight:700;">未填</td>';
-        // 複盤標記欄：已標記顯示藍勾(點可取消)，未標記顯示標記鈕
+        // 複盤標記欄：要不要複盤是 key in 人員依 ERP 比對在這裡決定的，所以標記/取消都在這裡做（toggle）。
+        // 已標記時同一顆按鈕變成「取消」，點了會跳確認（見 unmark-recount 的 click handler）。
         var isMarked = !!state.recounts[key];
-        var recountCell = isMarked
-          ? '<td class="num" style="white-space:nowrap;"><button class="mini-btn marked" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">✓已標記</button></td>'
-          : '<td class="num" style="white-space:nowrap;"><button class="mini-btn" data-action="mark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">標記複盤</button></td>';
+        var recountCell;
+        if(isMarked){
+          // key in 人員是唯一知道 ERP 差異線索的人（例如「差1箱，可能庫存漏點」），這裡順勢讓他直接記下來，
+          // 備註走既有的 saveRecountNote，跟複盤頁是同一份資料，不用另外做同步。不常駐輸入框，點了才展開。
+          var rNote = String((state.recounts[key] && state.recounts[key].note) || "").trim();
+          var noteOpen = !!state.summaryNoteOpenKeys[key];
+          var noteBtnHtml = noteOpen ? '' :
+            '<button class="mini-btn'+(rNote?' marked':'')+'" data-action="toggle-recount-note" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">'+(rNote?'✎有備註':'✎備註')+'</button>';
+          var noteEditorHtml = noteOpen
+            ? '<div class="chip-editor summary-note-editor">'+
+                '<textarea class="summary-note-input" rows="2" placeholder="例如：差1箱，可能庫存漏點">'+escapeHtml(rNote)+'</textarea>'+
+                '<div class="summary-note-actions">'+
+                  '<button class="ce-btn primary" data-action="save-recount-note-summary" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">存備註</button>'+
+                  '<button class="ce-btn" data-action="toggle-recount-note" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">收合</button>'+
+                '</div>'+
+              '</div>'
+            : '';
+          recountCell = '<td class="num" style="white-space:nowrap;">'+
+            '<div style="display:flex; flex-direction:column; gap:4px; align-items:flex-end;">'+
+              '<button class="mini-btn marked" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">✓已標記複盤(點擊取消)</button>'+
+              noteBtnHtml+
+            '</div>'+
+            noteEditorHtml+
+          '</td>';
+        } else {
+          recountCell = '<td class="num" style="white-space:nowrap;"><button class="mini-btn" data-action="mark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">標記複盤</button></td>';
+        }
         html += '<tr'+rowStyle+'>'+colorCell+'<td>'+escapeHtml(sz)+'</td>'+
           shelfCell + stockCell +
           '<td class="num"><strong>'+(total===""?'—':total)+'</strong></td>'+
@@ -2949,6 +3001,11 @@ function renderRecount(){
       confirmSectionHtml = '<button class="btn secondary ri-confirm-btn" data-action="confirm-recount" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'">確認更新（回寫彙總）</button>';
     }
 
+    // 取消複盤的入口權責在彙總明細（key in 人員依 ERP 比對決定要不要複盤），複盤清單這裡只留給主管當例外處理的後路
+    var unmarkBtnHtml = manager
+      ? '<button class="mini-btn" data-action="unmark-recount-confirm" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" style="border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep);">取消複盤</button>'
+      : '';
+
     return '<div class="recount-item'+(recountVal!==null?' done':'')+'" data-key="'+escapeHtml(k)+'">'+
       '<div class="ri-top">'+
         '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+
@@ -2957,7 +3014,7 @@ function renderRecount(){
         '<div class="hdr-right">'+
           assignBadgeHtml+
           '<span class="ri-assignee'+(badge.cls?' '+badge.cls:'')+'">'+escapeHtml(badge.text)+'</span>'+
-          '<button class="mini-btn" data-action="unmark-recount-confirm" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" style="border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep);">取消複盤</button>'+
+          unmarkBtnHtml+
         '</div>'+
       '</div>'+
       '<div class="ri-nums">'+
@@ -3518,25 +3575,54 @@ function bindEvents(){
         // 不問指派,直接加入清單(認領制:之後有空的人自己填名字)
         // 不 await：markRecountRemote 內部本地狀態已經樂觀更新過了，畫面立刻反映，網路請求在背景送出
         markRecountRemote(style, color, size, "");
+        // 標記成功順勢展開備註輸入：key in 人員是唯一知道 ERP 差異線索的人（例如「差1箱，可能庫存漏點」），
+        // 讓他可以當下直接記下來，也可以按「收合」跳過。備註走既有的 saveRecountNote，複盤頁自然看得到。
+        state.summaryNoteOpenKeys[keyFor(style, color, size)] = true;
         showToast('已加入複盤清單');
         render_keepExpanded(); // 停留原畫面，不收合目前展開的品牌／型號
       }
 
       else if(action === 'unmark-recount'){
+        // 彙總明細的「已標記複盤(點擊取消)」按鈕：要不要複盤是 key in 人員依 ERP 比對在這裡決定的，
+        // 所以取消也在這裡做，需要二次確認避免手滑誤按（見 buildUnmarkRecountConfirmMessage）
         var style = el.getAttribute('data-style');
         var color = el.getAttribute('data-color');
         var size = el.getAttribute('data-size');
+        if(!confirm(buildUnmarkRecountConfirmMessage(style, color, size))){
+          return;
+        }
         unmarkRecountRemote(style, color, size);
-        showToast('已移除複盤標記');
+        delete state.summaryNoteOpenKeys[keyFor(style, color, size)];
+        showToast('已取消複盤標記');
+        render_keepExpanded();
+      }
+
+      else if(action === 'toggle-recount-note'){
+        var tnKey = keyFor(el.getAttribute('data-style'), el.getAttribute('data-color'), el.getAttribute('data-size'));
+        state.summaryNoteOpenKeys[tnKey] = !state.summaryNoteOpenKeys[tnKey];
+        render_keepExpanded();
+      }
+
+      else if(action === 'save-recount-note-summary'){
+        var snStyle = el.getAttribute('data-style');
+        var snColor = el.getAttribute('data-color');
+        var snSize = el.getAttribute('data-size');
+        var noteWrapper = el.closest('.summary-note-editor');
+        var noteTextarea = noteWrapper ? noteWrapper.querySelector('textarea') : null;
+        var noteVal = noteTextarea ? noteTextarea.value.trim() : "";
+        await saveRecountNoteRemote(snStyle, snColor, snSize, noteVal);
+        state.summaryNoteOpenKeys[keyFor(snStyle, snColor, snSize)] = false;
+        showToast('已儲存備註');
         render_keepExpanded();
       }
 
       else if(action === 'unmark-recount-confirm'){
-        // 複盤清單頁的「取消複盤」按鈕：把這個品項移出複盤清單，需要二次確認避免手滑誤按
+        // 複盤清單頁的「取消複盤」按鈕：只有主管看得到(當作例外處理的後路)，一般成員不該在這裡取消
+        // ——要不要複盤是 key in 人員在彙總明細依 ERP 比對決定的。需要二次確認避免手滑誤按。
         var ucStyle = el.getAttribute('data-style');
         var ucColor = el.getAttribute('data-color');
         var ucSize = el.getAttribute('data-size');
-        if(!confirm('⚠️ 確定要把「'+ucStyle+' · '+ucColor+' · '+ucSize+'」移出複盤清單嗎？\n\n這會清除這一格的複盤標記，以及已經填的架上/庫存複盤數字跟備註（不影響第一次盤點的資料）。此動作無法復原。')){
+        if(!confirm(buildUnmarkRecountConfirmMessage(ucStyle, ucColor, ucSize))){
           return;
         }
         unmarkRecountRemote(ucStyle, ucColor, ucSize);
