@@ -143,6 +143,11 @@
     font-size:12px; font-weight:700; padding:3px 10px; border-radius:12px;
     background:#e7e1d3; color:var(--muted); white-space:nowrap; flex:0 0 auto;
   }
+  .assign-confirm-tag{
+    display:inline-block; margin-left:6px;
+    font-size:11px; font-weight:700; padding:1px 7px; border-radius:10px;
+    background:#e8f5ec; color:#2f7a3e; white-space:nowrap;
+  }
   .assign-footer{
     position:sticky; bottom:0;
     display:flex; align-items:center; justify-content:space-between;
@@ -378,6 +383,13 @@
   .mini-btn.marked{
     border-color:#2f7a3e; background:#e8f5ec; color:#2f7a3e;
   }
+  /* 彙總明細頁的型號登錄狀態徽章 */
+  .confirm-status-badge{
+    font-size:11px; font-weight:700; padding:4px 9px; border-radius:6px;
+    white-space:nowrap;
+  }
+  .confirm-status-badge.ok{ background:#e8f5ec; color:#2f7a3e; }
+  .confirm-status-badge.pending{ background:#fdf0e4; color:#c45a1e; }
   /* 複盤清單項目 */
   .recount-item{
     border:1px solid var(--line); border-radius:12px;
@@ -419,6 +431,12 @@
   }
   .recount-item .ri-calc-hint.ri-calc-hint-error{ color:#c0392b; }
   .recount-item .ri-actions{ margin-top:10px; text-align:right; }
+  .recount-item .ri-confirm-btn{ margin-top:12px; width:auto; padding:9px 16px; font-size:13.5px; border-color:var(--good); color:var(--good); }
+  .recount-item .ri-confirmed-status{
+    margin-top:12px; padding:8px 12px;
+    background:#e8f5ec; color:#2f7a3e; border-radius:8px;
+    font-size:13px; font-weight:700; text-align:center;
+  }
   .recount-item .ri-fields{
     display:grid; grid-template-columns:1fr 1fr; gap:10px;
     margin-top:12px; padding-top:12px; border-top:1px solid var(--line);
@@ -953,6 +971,37 @@ async function clearRecountsRemote(){
     state.recounts = {};
   }catch(e){ console.error("clear recounts failed", e); showToast("清空失敗，請檢查網路"); }
 }
+// 主管確認複盤結果、回寫進彙總。架上/庫存複盤存的是算式文字（例如"50+30"），這裡先用既有的
+// parseExpr() 算成數字才送給後端——後端不重新解析算式，直接信任前端算好的結果，跟平常存檔（saveCount）
+// 收到的 shelf/stock 是同一套慣例。樂觀更新同時更新 recounts(已確認狀態)跟 counts(讓「第一次」欄位、
+// 差異立刻反映新值)，失敗就兩個都還原。
+async function confirmRecountRemote(style, color, size){
+  var key = keyFor(style, color, size);
+  var r = state.recounts[key];
+  if(!r) return;
+  var shelfVal = parseExpr(String(r.shelf || ""));
+  var stockVal = parseExpr(String(r.stock || ""));
+  if(isNaN(shelfVal) || isNaN(stockVal)){
+    showToast("架上或庫存複盤的算式格式異常，無法確認，請先修正");
+    return;
+  }
+  var confirmedBy = getRecountUserName();
+  var prevRecount = r;
+  var prevCount = state.counts[key];
+  state.recounts[key] = Object.assign({}, r, {
+    confirmed: true, confirmedBy: confirmedBy, confirmedAt: new Date().toISOString()
+  });
+  state.counts[key] = { shelf: shelfVal, stock: stockVal, total: shelfVal + stockVal, countedBy: confirmedBy };
+  try{
+    await apiPost({ action:"confirmRecount", style:style, color:color, size:size, shelf:shelfVal, stock:stockVal, confirmedBy:confirmedBy });
+  }catch(e){
+    console.error("confirm recount failed", e);
+    state.recounts[key] = prevRecount;
+    state.counts[key] = prevCount;
+    showToast("確認失敗：" + (e && e.message ? e.message : "請檢查網路"));
+    throw e;
+  }
+}
 async function regenerateSummarySheetsRemote(){
   try{
     await apiPost({ action:"regenerate" });
@@ -1136,7 +1185,7 @@ function normalizeCounts(counts){
 // 複盤任務的文字欄位一律強制轉成字串型別，避免 Google Sheet 把某格內容存成 number
 // （例如身分名字剛好打成純數字）時，前端對這些欄位做 .trim()/.toLowerCase() 直接炸掉整頁。
 // 數字格位（架上複盤/庫存複盤）維持原樣，使用處本來就會另外用 String()/parseExpr 處理。
-var RECOUNT_TEXT_FIELDS = ["note","assignee","editingBy","lastEditBy"];
+var RECOUNT_TEXT_FIELDS = ["note","assignee","editingBy","lastEditBy","confirmedBy"];
 function normalizeRecounts(recounts){
   if(!recounts || typeof recounts !== 'object') return recounts || {};
   var out = {};
@@ -1597,17 +1646,20 @@ function renderAssign(){
     var parts = k.split("|");
     var style = parts[0], color = parts[1], size = parts[2];
     var label = escapeHtml(style)+'-'+escapeHtml(color)+'-'+escapeHtml(size);
+    // 已確認回寫的格子額外貼一個小標籤，方便主管一眼跳過不用再處理（跟指派/取消指派互不影響）
+    var confirmTagHtml = state.recounts[k] && state.recounts[k].confirmed
+      ? '<span class="assign-confirm-tag">✓已確認</span>' : '';
     var assignedTo = String(state.assignments[k] || "").trim();
     if(assignedTo){
       return '<div class="assign-row assign-row-locked" data-action="assign-reassign-confirm" data-key="'+escapeHtml(k)+'" data-assigned="'+escapeHtml(assignedTo)+'">'+
-        '<span>'+label+'</span>'+
+        '<span>'+label+confirmTagHtml+'</span>'+
         '<span class="assign-badge">已派：'+escapeHtml(assignedTo)+'</span>'+
       '</div>';
     }
     var checked = !!state.assignChecked[k];
     return '<div class="assign-row'+(checked?' checked':'')+'" data-action="assign-toggle-check" data-key="'+escapeHtml(k)+'">'+
       '<span class="assign-check">'+(checked?'☑':'☐')+'</span>'+
-      '<span>'+label+'</span>'+
+      '<span>'+label+confirmTagHtml+'</span>'+
     '</div>';
   }
 
@@ -2294,6 +2346,10 @@ function renderSummary(){
         var styleMissingTag = built.missing > 0 ? ' <span style="background:#e87a3e; color:#fff; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">未輸入 '+built.missing+'</span>' : '';
         var styleTotalText = ' · 合計 '+built.total;
         var styleClaimed = !!state.claims[st.style];
+        var stylePendingConfirm = computeStyleConfirmStatus(st.style);
+        var styleConfirmStatusHtml = stylePendingConfirm === 0
+          ? '<span class="confirm-status-badge ok">✓ 可登錄</span>'
+          : '<span class="confirm-status-badge pending">⚠ 複盤處理中(差'+stylePendingConfirm+'格)</span>';
         bodyHtml += '<div class="style-group'+(built.missing > 0 ? ' has-missing' : '')+'">'+
           '<div class="style-group-header" data-action="toggle-style-group">'+
             '<div class="sg-left">'+
@@ -2301,6 +2357,7 @@ function renderSummary(){
               '<div class="sg-meta">'+st.colors.length+' 色'+styleTotalText+'</div>'+
             '</div>'+
             '<div class="hdr-right">'+
+              styleConfirmStatusHtml+
               '<button class="mini-btn'+(styleClaimed?' marked':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(st.style)+'">'+(styleClaimed?'✓ 已認領':'未認領')+'</button>'+
               '<div class="sg-arrow">›</div>'+
             '</div>'+
@@ -2318,10 +2375,18 @@ function renderSummary(){
     if(g.brand !== null) metaParts.push(styleCount + ' 個型號');
     if(groupMissing > 0) metaParts.push('<span style="color:#e87a3e; font-weight:700;">未輸入 '+groupMissing+' 筆</span>');
     var metaText = metaParts.join(' · ');
-    // 沒有品牌分組的獨立款式：這一層 brand-group 其實就代表單一型號，所以認領按鈕放在這裡；
-    // 有品牌分組的話，認領按鈕已經放在上面每個型號各自的 style-group-header 裡，這裡不重複放
+    // 沒有品牌分組的獨立款式：這一層 brand-group 其實就代表單一型號，所以認領按鈕跟登錄狀態放在這裡；
+    // 有品牌分組的話，這兩個都已經放在上面每個型號各自的 style-group-header 裡，這裡不重複放
     var groupClaimBtnHtml = g.brand === null
       ? (function(){ var c = !!state.claims[groupName]; return '<button class="mini-btn'+(c?' marked':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(groupName)+'">'+(c?'✓ 已認領':'未認領')+'</button>'; })()
+      : '';
+    var groupConfirmStatusHtml = g.brand === null
+      ? (function(){
+          var pending = computeStyleConfirmStatus(groupName);
+          return pending === 0
+            ? '<span class="confirm-status-badge ok">✓ 可登錄</span>'
+            : '<span class="confirm-status-badge pending">⚠ 複盤處理中(差'+pending+'格)</span>';
+        })()
       : '';
     // 品牌層「已完成」標籤：只有真的有品牌分組(底下不只一個型號)才顯示，判定沿用 computeClaimBrandProgress
     // (跟原本認領總覽頁用的同一套邏輯)——品牌底下所有型號都認領了才算完成
@@ -2340,6 +2405,7 @@ function renderSummary(){
         '</div>'+
         '<div class="hdr-right">'+
           '<div class="bg-totals">合計 '+groupTotal+'</div>'+
+          groupConfirmStatusHtml+
           groupClaimBtnHtml+
           '<div class="bg-arrow">›</div>'+
         '</div>'+
@@ -2512,17 +2578,19 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
 
 // 依款式彙總複盤進度：只統計「有標記複盤格子」且「自己看得到」的款式（非主管只算指派給自己的格子，
 // 跟複盤清單看到的範圍一致，避免總覽區塊透露出跟自己無關的其他人格子）。
-// 回傳 { 款式名: { total, done, missing:[{color,size},...] } }
+// confirmed 是額外附加的統計（已確認回寫的格數），不影響 done/total 這個完成度定義本身。
+// 回傳 { 款式名: { total, done, confirmed, missing:[{color,size},...] } }
 function computeRecountStyleProgress(){
   var byStyle = {};
   visibleRecountKeys().forEach(function(key){
     var parts = key.split("|");
     var style = parts[0], color = parts[1], size = parts[2];
-    if(!byStyle[style]) byStyle[style] = { total:0, done:0, missing:[] };
+    if(!byStyle[style]) byStyle[style] = { total:0, done:0, confirmed:0, missing:[] };
     var entry = byStyle[style];
     entry.total++;
     if(isRecountFilled(state.recounts[key])){ entry.done++; }
     else { entry.missing.push({color:color, size:size}); }
+    if(state.recounts[key].confirmed){ entry.confirmed++; }
   });
   return byStyle;
 }
@@ -2541,6 +2609,7 @@ function computeRecountBrandProgress(){
       style: styleName,
       total: p.total,
       done: p.done,
+      confirmed: p.confirmed,
       complete: p.done === p.total,
       missing: p.missing
     });
@@ -2595,17 +2664,21 @@ function renderRecountProgressOverview(){
       return '<div class="rp-pending-item">'+
         '<div class="rp-pending-top">'+
           '<span class="rp-pending-name">'+escapeHtml(s.style)+'</span>'+
-          '<span class="rp-pending-count">'+s.done+'/'+s.total+'</span>'+
+          '<span class="rp-pending-count">'+s.done+'/'+s.total+(s.confirmed>0?'（已確認 '+s.confirmed+'）':'')+'</span>'+
         '</div>'+
         '<div class="rp-pending-missing">還差：'+formatMissingSlots(s.missing)+'</div>'+
       '</div>';
     }).join("");
 
+    // 已完成（填完）不等於已確認回寫，兩者分開標示，方便主管一眼看出哪些款式雖然填完但還沒回寫彙總
     var doneHtml = doneStyles.length === 0 ? "" :
       '<div class="rp-done-wrap">'+
         '<div class="rp-done-header" data-action="toggle-rp-done">✓ 已完成 '+doneStyles.length+' 款（點此展開/收合）<span class="sg-arrow">›</span></div>'+
         '<div class="rp-done-body">'+
-          doneStyles.map(function(s){ return '<div class="rp-done-item">✓ '+escapeHtml(s.style)+'</div>'; }).join("")+
+          doneStyles.map(function(s){
+            var confirmTag = s.confirmed === s.total ? '（已確認 '+s.confirmed+'/'+s.total+'）' : '（已確認 '+s.confirmed+'/'+s.total+'，尚未全部回寫）';
+            return '<div class="rp-done-item">✓ '+escapeHtml(s.style)+' <span style="color:var(--muted); font-weight:600;">'+confirmTag+'</span></div>';
+          }).join("")+
         '</div>'+
       '</div>';
 
@@ -2628,6 +2701,20 @@ function renderRecountProgressOverview(){
     '<p class="sub">依品牌統計「已標記複盤」的款式完成情形（分母只計入有標記複盤格子的款式）。點品牌可展開查看細項。</p>'+
     groupsHtml+
   '</div>';
+}
+
+// ---------- 型號登錄狀態判定（給彙總明細頁看，判斷這個型號的數字能不能安心登 ERP） ----------
+// 跟複盤頁的 visibleRecountKeys() 是不同用途：彙總頁是給任何要登 ERP 的人看整體狀態，
+// 所以這裡故意讀「全部」複盤任務（不套用複盤頁「指派給自己才看得到」的過濾），
+// 只要這個型號還有任何一格複盤任務沒確認回寫，就算「處理中」——跟複盤卡片的 confirmed 欄位是同一個資料來源。
+// 回傳還沒確認的格數（0 = 可登錄）。
+function computeStyleConfirmStatus(styleName){
+  var pending = 0;
+  Object.keys(state.recounts).forEach(function(key){
+    if(key.split("|")[0] !== styleName) return;
+    if(!state.recounts[key].confirmed) pending++;
+  });
+  return pending;
 }
 
 // ---------- 型號認領進度判定（依品牌彙總「型號」層級的認領情形，避免多人同時把同一型號登入 ERP） ----------
@@ -2769,6 +2856,15 @@ function renderRecount(){
       ? '<span class="ri-assign-badge'+(assignedTo?'':' unassigned')+'">'+(assignedTo?'已派：'+escapeHtml(assignedTo):'未指派')+'</span>'
       : '';
 
+    // 確認回寫：只有主管看得到，且架上/庫存複盤都填完才能確認；已確認的格子改顯示狀態，不再顯示按鈕
+    var confirmSectionHtml = "";
+    if(r.confirmed){
+      var confirmedAtText = r.confirmedAt ? formatConfirmedAt(r.confirmedAt) : "";
+      confirmSectionHtml = '<div class="ri-confirmed-status">✓ 已確認（'+escapeHtml(r.confirmedBy || "")+(confirmedAtText ? '，'+confirmedAtText : '')+'）</div>';
+    } else if(manager && recountVal !== null){
+      confirmSectionHtml = '<button class="btn secondary ri-confirm-btn" data-action="confirm-recount" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'">確認更新（回寫彙總）</button>';
+    }
+
     return '<div class="recount-item'+(recountVal!==null?' done':'')+'" data-key="'+escapeHtml(k)+'">'+
       '<div class="ri-top">'+
         '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+
@@ -2787,6 +2883,7 @@ function renderRecount(){
         '<div class="ri-arrow">=</div>'+
         '<div class="ri-num"><div class="ri-num-label">差異</div><div class="ri-num-val ri-diff-val">'+diffHtml+'</div></div>'+
       '</div>'+
+      confirmSectionHtml+
       '<div class="ri-fields">'+
         '<div class="ri-num"><div class="ri-num-label">架上（可加可乘）</div>'+
           '<input class="ri-input" type="text" inputmode="text" value="'+escapeHtml(shelfRaw)+'" placeholder="如 50+30" '+
@@ -3141,6 +3238,17 @@ function escapeHtml(s){
   });
 }
 
+// 把確認時間的 ISO 字串格式化成簡短的「月/日 時:分」，格式異常就回傳空字串（不擋畫面）
+function formatConfirmedAt(iso){
+  try{
+    var d = new Date(iso);
+    if(isNaN(d.getTime())) return "";
+    var hh = String(d.getHours()).padStart(2,'0');
+    var mi = String(d.getMinutes()).padStart(2,'0');
+    return (d.getMonth()+1)+'/'+d.getDate()+' '+hh+':'+mi;
+  }catch(e){ return ""; }
+}
+
 // ---------- Events ----------
 function bindEvents(){
   var app = document.getElementById("app");
@@ -3325,6 +3433,30 @@ function bindEvents(){
         }
         unmarkRecountRemote(ucStyle, ucColor, ucSize);
         showToast('已移出複盤清單');
+        render_keepExpanded();
+      }
+
+      else if(action === 'confirm-recount'){
+        var cfStyle = el.getAttribute('data-style');
+        var cfColor = el.getAttribute('data-color');
+        var cfSize = el.getAttribute('data-size');
+        var cfKey = keyFor(cfStyle, cfColor, cfSize);
+        var cfR = state.recounts[cfKey];
+        if(!cfR) return;
+        var cfShelfVal = parseExpr(String(cfR.shelf || ""));
+        var cfStockVal = parseExpr(String(cfR.stock || ""));
+        var cfC = state.counts[cfKey];
+        var cfFirstShelfText = (cfC && cfC.shelf !== "" && cfC.shelf !== null && cfC.shelf !== undefined) ? cfC.shelf : "—";
+        var cfFirstStockText = (cfC && cfC.stock !== "" && cfC.stock !== null && cfC.stock !== undefined) ? cfC.stock : "—";
+        if(!confirm('將以複盤數字（架上'+cfShelfVal+'／庫存'+cfStockVal+'）更新彙總，原初盤（架上'+cfFirstShelfText+'／庫存'+cfFirstStockText+'）將被取代。\n\n確定要確認嗎？')){
+          return;
+        }
+        try{
+          await confirmRecountRemote(cfStyle, cfColor, cfSize);
+          showToast('已確認並更新彙總');
+        }catch(e){
+          // confirmRecountRemote 內部已經還原樂觀更新並顯示錯誤 toast，這裡不用重複處理
+        }
         render_keepExpanded();
       }
 
