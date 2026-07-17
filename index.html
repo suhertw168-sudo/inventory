@@ -118,6 +118,40 @@
     font-family:inherit;
   }
   .identity-row:active{ background:#f1ece1; border-color:var(--accent); }
+  .identity-row-selected{ border-color:var(--accent); background:#fdf3ef; }
+  .assign-row{
+    display:flex; align-items:center; gap:10px;
+    width:100%; text-align:left;
+    padding:12px 14px;
+    margin-bottom:6px;
+    border:1.5px solid var(--line);
+    border-radius:10px;
+    background:var(--card);
+    color:var(--ink);
+    font-size:14.5px; font-weight:600;
+    cursor:pointer;
+    font-family:inherit;
+  }
+  .assign-row:active{ background:#f1ece1; }
+  .assign-row.checked{ border-color:var(--accent); background:#fdf3ef; }
+  .assign-check{ font-size:18px; flex:0 0 auto; }
+  .assign-row-locked{
+    background:#f1ece1; color:var(--muted);
+    justify-content:space-between;
+  }
+  .assign-badge{
+    font-size:12px; font-weight:700; padding:3px 10px; border-radius:12px;
+    background:#e7e1d3; color:var(--muted); white-space:nowrap; flex:0 0 auto;
+  }
+  .assign-footer{
+    position:sticky; bottom:0;
+    display:flex; align-items:center; justify-content:space-between;
+    gap:12px; padding:12px 18px;
+    background:var(--paper);
+    border-top:1px solid var(--line);
+    font-size:13.5px; color:var(--muted); font-weight:600;
+  }
+  .assign-footer .btn{ width:auto; padding:10px 22px; }
   .btn{
     display:block; width:100%;
     background:var(--accent);
@@ -362,6 +396,11 @@
   .recount-item .ri-assignee.unassigned{ background:#f1ece1; color:var(--muted); }
   .recount-item .ri-assignee.active{ background:#fdf0e4; color:#c45a1e; }
   .recount-item .ri-assignee.done{ background:#e8f5ec; color:#2f7a3e; }
+  .recount-item .ri-assign-badge{
+    font-size:12px; font-weight:700; padding:3px 10px; border-radius:12px;
+    background:#f0e9fb; color:#6a3fa0; white-space:nowrap; flex:0 0 auto;
+  }
+  .recount-item .ri-assign-badge.unassigned{ background:#f1ece1; color:var(--muted); }
   .recount-item .ri-nums{
     display:flex; align-items:flex-end; gap:10px;
   }
@@ -558,8 +597,11 @@ var state = {
   claims: {},            // key 型號名稱 -> true（已認領，避免多人同時把同一型號登入ERP）。沒有這個 key = 未認領
   people: [],            // 人員名單（姓名陣列），供「複盤/盤點身分」選單使用
   managers: [],          // 主管名單（姓名陣列），從人員名單中挑選，判定 isManager() 用
+  assignments: {},       // key "style|color|size" -> 指派給的姓名，複盤分配用，跟「複盤人」(recounts[key].assignee) 是不同概念
+  assignSelectedName: "", // 指派頁目前選定要指派的對象（暫存，離開頁面不特別清除，方便連續指派給同一人）
+  assignChecked: {},     // 指派頁目前勾選要指派的格子 key -> true（暫存，進頁面時會重設）
   pickIdentityReturn: null, // 從 pickIdentity 頁選完（或取消）後要回去的畫面名稱
-  view: "home",         // home | brandModels | setup | counting | summary | recount | claims | pickIdentity
+  view: "home",         // home | brandModels | setup | counting | summary | recount | claims | pickIdentity | assign
   curBrandName: "",
   curStyleIdx: 0,
   curColorIdx: 0,
@@ -783,6 +825,18 @@ function isManager(){
   if(!current) return false;
   return (state.managers || []).indexOf(current) !== -1;
 }
+// 目前這台手機「看得到」的複盤格子 key 清單：主管看全部；非主管只看指派給自己的格子。
+// 這是唯一的過濾點——複盤清單、款式進度總覽、首頁徽章數字、背景同步的「清單有變動」比對都共用這份邏輯，
+// 不在各處各自重複判斷，也確保「指派資料同步回來後，變動提示橫幅算得出來」（見 syncFromBackend）。
+function visibleRecountKeys(){
+  var allKeys = Object.keys(state.recounts || {});
+  if(isManager()) return allKeys;
+  var myName = getRecountUserName();
+  if(!myName) return [];
+  return allKeys.filter(function(k){
+    return String(state.assignments[k] || "").trim() === myName;
+  });
+}
 // 進盤點中／複盤頁前先確認這台手機有沒有設定過身分。呼叫前呼叫端會先把 state.view 設成想去的畫面：
 // 身分有效就留在原地；名單非空但沒身分（或身分是名單裡找不到的舊資料，例如手打的錯字/大小寫不符）就跳去
 // pickIdentity 選單重選一次，選完會自動回到這個畫面；名單是空的才退回原本的手動輸入，避免一開始被鎖死。
@@ -967,6 +1021,24 @@ async function deleteManagerRemote(name){
   }catch(e){ console.error("delete manager failed", e); showToast("移除主管失敗，請檢查網路"); }
 }
 
+// ---------- 複盤指派 API ----------
+// 指派是「主管要誰去做這一格」，跟「複盤人」(誰實際存了架上/庫存數字，見 saveRecountValueRemote)
+// 是兩個獨立的概念，分開存放，互不覆蓋。走樂觀更新，寫法比照複盤標記 API。
+async function assignRecountRemote(style, color, size, assignee){
+  var key = keyFor(style, color, size);
+  state.assignments[key] = assignee; // 本地先更新(樂觀更新)
+  try{
+    await apiPost({ action:"assignRecount", style:style, color:color, size:size, assignee:assignee });
+  }catch(e){ console.error("assign recount failed", e); showToast("指派失敗，請檢查網路"); }
+}
+async function unassignRecountRemote(style, color, size){
+  var key = keyFor(style, color, size);
+  delete state.assignments[key];
+  try{
+    await apiPost({ action:"unassignRecount", style:style, color:color, size:size });
+  }catch(e){ console.error("unassign recount failed", e); showToast("取消指派失敗，請檢查網路"); }
+}
+
 // ---------- Init ----------
 // 品牌顯示順序：從後端載入（管理員可在設定頁調整）。後端還沒設定時用這個預設順序。
 var BRAND_ORDER = ["SR","CP","AG短袖","AG冬衣","KY","PL","TH","CAP"];
@@ -1080,6 +1152,18 @@ function normalizeRecounts(recounts){
   return out;
 }
 
+// 指派名單的 key 跟值都強制轉字串，理由同 RECOUNT_TEXT_FIELDS：避免姓名剛好是純數字
+// （或款式/顏色/尺寸剛好是純數字組成的 key）被 Google Sheet 存成 number 型別，比對時整頁掛掉。
+function normalizeAssignments(assignments){
+  if(!assignments || typeof assignments !== 'object') return assignments || {};
+  var out = {};
+  Object.keys(assignments).forEach(function(k){
+    var v = assignments[k];
+    out[String(k)] = (v !== null && v !== undefined) ? String(v) : v;
+  });
+  return out;
+}
+
 // 載入畫面的計時器與階段控制
 var loadStartTime = null;
 var loadTimerInterval = null;
@@ -1140,6 +1224,7 @@ async function init(){
       if(all.claims){ state.claims = all.claims; }
       if(Array.isArray(all.people)){ state.people = all.people.map(String); }
       if(Array.isArray(all.managers)){ state.managers = all.managers.map(String); }
+      if(all.assignments){ state.assignments = normalizeAssignments(all.assignments); }
     } else {
       fetchFailed = true;
     }
@@ -1269,6 +1354,7 @@ async function syncFromBackend(){
     if(all.claims){ state.claims = all.claims; }
     if(Array.isArray(all.people)){ state.people = all.people.map(String); }
     if(Array.isArray(all.managers)){ state.managers = all.managers.map(String); }
+    if(all.assignments){ state.assignments = normalizeAssignments(all.assignments); }
 
     // 比對：跟目前的 state 比，看資料有沒有真的變動（避免無謂的「有新資料」提示）
     var newStructure = normalizeStructure(all.structure);
@@ -1343,10 +1429,14 @@ async function syncFromBackend(){
       });
       // 清單本身（有沒有新增/被移除的品項）不在上面的局部 patch 範圍內，故意留給使用者自己決定何時重畫，
       // 免得正在複盤中清單忽然變動、打斷操作。這裡只是拿「目前畫面上實際看到的清單」(recountRenderedKeys，
-      // 只有真的重畫過清單才會更新，見 renderRecount()) 跟最新的 state.recounts 做差集比對，
+      // 只有真的重畫過清單才會更新，見 renderRecount()) 跟「用最新資料重算一次現在該看到哪些格子」做差集比對，
       // 算出跟畫面上看到的差幾筆，有差就顯示提示橫幅，完全不觸發任何重畫。
+      // 用 visibleRecountKeys() 而不是直接 Object.keys(state.recounts)：非主管只看得到指派給自己的格子，
+      // 兩邊一定要用同一套過濾邏輯比對，否則非主管會被一堆「跟自己無關的格子」洗出一堆假的變動提示；
+      // 這同時也是「成員被指派新任務時怎麼得知」的機制——新被指派的格子在這裡會被算成一筆新增，跟現有
+      // 「別人新增/移除複盤標記」用同一顆橫幅提示，使用者點了才刷新，不是即時 push。
       if(recountRenderedKeys){
-        var curRecountKeys = Object.keys(state.recounts);
+        var curRecountKeys = visibleRecountKeys();
         var addedN = curRecountKeys.filter(function(k){ return recountRenderedKeys.indexOf(k) === -1; }).length;
         var removedN = recountRenderedKeys.filter(function(k){ return curRecountKeys.indexOf(k) === -1; }).length;
         var changedN = addedN + removedN;
@@ -1428,6 +1518,11 @@ function render(){
   else if(state.view === "summary") app.innerHTML = renderSummary();
   else if(state.view === "recount") app.innerHTML = renderRecount();
   else if(state.view === "pickIdentity") app.innerHTML = renderPickIdentity();
+  else if(state.view === "assign"){
+    // 指派頁是主管專用：就算不是靠按鈕（例如主管身分在背景同步後被移除）進到這個 view，這裡也再擋一次
+    if(isManager()) app.innerHTML = renderAssign();
+    else { state.view = "recount"; app.innerHTML = renderRecount(); }
+  }
   bindEvents();
 }
 
@@ -1463,6 +1558,119 @@ function renderIdentityListItems(filterText){
     return '<button type="button" class="identity-row" data-action="pick-identity-select" data-name="'+escapeHtml(n)+'">'+
       '<span>'+escapeHtml(n)+'</span>'+
       (isCurrent ? '<span style="color:var(--accent-deep); font-size:12.5px; font-weight:700;">目前身分</span>' : '<span class="chev">›</span>')+
+    '</button>';
+  }).join("");
+}
+
+// ---------- 複盤分配（主管專用：指派已標記複盤的格子給人員） ----------
+function renderAssign(){
+  var allKeys = Object.keys(state.recounts || {});
+
+  function brandOfKey(k){
+    var style = k.split("|")[0];
+    var g = findBrandGroupForStyle(style);
+    return (g && g.brand) ? g.brand : "";
+  }
+  var orderMap = {};
+  BRAND_ORDER.forEach(function(name, idx){ orderMap[name] = idx; });
+  var brands = [];
+  allKeys.forEach(function(k){
+    var b = brandOfKey(k);
+    if(b && brands.indexOf(b) === -1) brands.push(b);
+  });
+  brands.sort(function(a,b){
+    var ai = orderMap.hasOwnProperty(a) ? orderMap[a] : 9999;
+    var bi = orderMap.hasOwnProperty(b) ? orderMap[b] : 9999;
+    if(ai !== bi) return ai - bi;
+    return a.localeCompare(b, 'zh-Hant');
+  });
+  var byBrand = {};
+  var noBrandKeys = [];
+  allKeys.forEach(function(k){
+    var b = brandOfKey(k);
+    if(b){ if(!byBrand[b]) byBrand[b] = []; byBrand[b].push(k); }
+    else noBrandKeys.push(k);
+  });
+
+  // 產生單一格子的勾選列／已指派列
+  function buildAssignRow(k){
+    var parts = k.split("|");
+    var style = parts[0], color = parts[1], size = parts[2];
+    var label = escapeHtml(style)+'-'+escapeHtml(color)+'-'+escapeHtml(size);
+    var assignedTo = String(state.assignments[k] || "").trim();
+    if(assignedTo){
+      return '<div class="assign-row assign-row-locked" data-action="assign-reassign-confirm" data-key="'+escapeHtml(k)+'" data-assigned="'+escapeHtml(assignedTo)+'">'+
+        '<span>'+label+'</span>'+
+        '<span class="assign-badge">已派：'+escapeHtml(assignedTo)+'</span>'+
+      '</div>';
+    }
+    var checked = !!state.assignChecked[k];
+    return '<div class="assign-row'+(checked?' checked':'')+'" data-action="assign-toggle-check" data-key="'+escapeHtml(k)+'">'+
+      '<span class="assign-check">'+(checked?'☑':'☐')+'</span>'+
+      '<span>'+label+'</span>'+
+    '</div>';
+  }
+
+  var listHtml = "";
+  if(allKeys.length === 0){
+    listHtml = emptyStateHtml('目前沒有複盤項目可以指派', '到彙總頁的明細，先把要複盤的品項標記進複盤清單');
+  } else {
+    if(noBrandKeys.length > 0){
+      listHtml += '<div class="recount-brand-head">未分組</div>';
+      noBrandKeys.forEach(function(k){ listHtml += buildAssignRow(k); });
+    }
+    brands.forEach(function(b){
+      if(!byBrand[b]) return;
+      listHtml += '<div class="recount-brand-head">'+escapeHtml(b)+'</div>';
+      byBrand[b].forEach(function(k){ listHtml += buildAssignRow(k); });
+    });
+  }
+
+  var selectedCount = Object.keys(state.assignChecked).filter(function(k){ return state.assignChecked[k]; }).length;
+
+  return ''+
+  '<div class="topbar"><div class="topbar-row">'+
+    '<button class="icon-btn" data-action="goto-recount">‹ 返回</button>'+
+    '<div class="brand">複盤分配</div>'+
+    '<span style="width:60px"></span>'+
+  '</div></div>'+
+  '<main>'+
+    '<div class="panel">'+
+      '<h2>指派給誰</h2>'+
+      '<p class="sub">從人員名單挑選要指派的人，選好後在下面勾選要指派的格子，按最下面的「指派」批次送出。</p>'+
+      (state.assignSelectedName ? '<div style="margin-bottom:10px; font-size:14px;">目前選擇：<strong style="color:var(--accent-deep);">'+escapeHtml(state.assignSelectedName)+'</strong></div>' : '')+
+      '<div class="field" style="margin-bottom:6px;">'+
+        '<label>搜尋姓名</label>'+
+        '<input type="text" id="assign-target-search" placeholder="輸入姓名關鍵字快速尋找..." autocomplete="off">'+
+      '</div>'+
+      '<div id="assign-target-list">'+renderAssignTargetListItems("")+'</div>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>複盤格子清單</h2>'+
+      '<p class="sub">灰色格子代表已經指派出去，點一下可以改派給目前選擇的人、或取消指派。勾選未指派的格子後，按下方「指派」批次送出。</p>'+
+      listHtml+
+    '</div>'+
+  '</main>'+
+  '<div class="assign-footer">'+
+    '<span>已勾選 '+selectedCount+' 格</span>'+
+    '<button class="btn" data-action="assign-submit">指派</button>'+
+  '</div>';
+}
+
+// 依搜尋關鍵字過濾「指派給誰」的人員清單，寫法比照 renderIdentityListItems
+function renderAssignTargetListItems(filterText){
+  var kw = String(filterText || "").trim().toLowerCase();
+  var names = state.people.filter(function(n){
+    return !kw || n.toLowerCase().indexOf(kw) !== -1;
+  });
+  if(names.length === 0){
+    return emptyStateHtml('找不到符合的人員', kw ? '換個關鍵字試試' : '尚未建立人員名單');
+  }
+  return names.map(function(n){
+    var isSelected = n === state.assignSelectedName;
+    return '<button type="button" class="identity-row'+(isSelected?' identity-row-selected':'')+'" data-action="assign-pick-target" data-name="'+escapeHtml(n)+'">'+
+      '<span>'+escapeHtml(n)+'</span>'+
+      (isSelected ? '<span style="color:var(--accent-deep); font-size:12.5px; font-weight:700;">已選擇</span>' : '<span class="chev">›</span>')+
     '</button>';
   }).join("");
 }
@@ -1529,8 +1737,8 @@ function renderHome(){
   var done = doneSizeSlots(structure, state.counts);
   var pct = total ? Math.round(done/total*100) : 0;
 
-  // 複盤任務入口：算出待複盤筆數
-  var recountKeys = Object.keys(state.recounts || {});
+  // 複盤任務入口：算出待複盤筆數。非主管只算指派給自己的筆數，跟點進複盤頁看到的數字一致。
+  var recountKeys = visibleRecountKeys();
   var recountCount = recountKeys.length;
   var recountEntryHtml = recountCount > 0
     ? '<button class="btn secondary" data-action="goto-recount" style="border-color:#e0b8a8; color:var(--accent-deep); margin-top:10px;">📋 複盤任務（'+recountCount+' 筆待處理）</button>'
@@ -2302,11 +2510,12 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   }
 }
 
-// 依款式彙總複盤進度：只統計「有標記複盤格子」的款式。
+// 依款式彙總複盤進度：只統計「有標記複盤格子」且「自己看得到」的款式（非主管只算指派給自己的格子，
+// 跟複盤清單看到的範圍一致，避免總覽區塊透露出跟自己無關的其他人格子）。
 // 回傳 { 款式名: { total, done, missing:[{color,size},...] } }
 function computeRecountStyleProgress(){
   var byStyle = {};
-  Object.keys(state.recounts || {}).forEach(function(key){
+  visibleRecountKeys().forEach(function(key){
     var parts = key.split("|");
     var style = parts[0], color = parts[1], size = parts[2];
     if(!byStyle[style]) byStyle[style] = { total:0, done:0, missing:[] };
@@ -2456,7 +2665,10 @@ function computeClaimBrandProgress(){
 
 // ---------- 複盤清單畫面 ----------
 function renderRecount(){
-  var keys = Object.keys(state.recounts || {});
+  var manager = isManager();
+  // 唯一的過濾點：主管看全部格子，非主管只看指派給自己的格子。下面的認領人篩選、品牌篩選、
+  // 清單內容、空狀態訊息全部從這個已過濾好的 keys 往下算，不用各自重複判斷。
+  var keys = visibleRecountKeys();
   // 記錄這次真的把清單畫出來時，畫面上有哪些品項，當作之後判斷「清單有沒有變動」的基準點
   recountRenderedKeys = keys.slice();
 
@@ -2551,6 +2763,11 @@ function renderRecount(){
     var stockCalcHint = (stockFilled && /[+×xX*＊＋]/.test(stockRaw)) ? '<div class="ri-calc-hint">= '+recountStockVal+'</div>' : '';
     var badge = computeRecountBadge(r, recountVal !== null);
     var countedBy = (c && c.countedBy) ? String(c.countedBy).trim() : "";
+    // 指派標籤：只有主管看得到（非主管看到的本來就只有指派給自己的格子，不用再標一次）
+    var assignedTo = String(state.assignments[k] || "").trim();
+    var assignBadgeHtml = manager
+      ? '<span class="ri-assign-badge'+(assignedTo?'':' unassigned')+'">'+(assignedTo?'已派：'+escapeHtml(assignedTo):'未指派')+'</span>'
+      : '';
 
     return '<div class="recount-item'+(recountVal!==null?' done':'')+'" data-key="'+escapeHtml(k)+'">'+
       '<div class="ri-top">'+
@@ -2558,6 +2775,7 @@ function renderRecount(){
           '<span class="ri-countedby" style="font-weight:400; color:var(--muted); font-size:12px; margin-left:8px;">初盤：'+escapeHtml(countedBy || '未記錄')+'</span>'+
         '</div>'+
         '<div class="hdr-right">'+
+          assignBadgeHtml+
           '<span class="ri-assignee'+(badge.cls?' '+badge.cls:'')+'">'+escapeHtml(badge.text)+'</span>'+
           '<button class="mini-btn" data-action="unmark-recount-confirm" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" style="border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep);">取消複盤</button>'+
         '</div>'+
@@ -2995,8 +3213,56 @@ function bindEvents(){
       }
 
       else if(action === 'recount-assign'){
-        // 複盤分配（指派複盤工作給大家）留給第三階段做，這裡先只有按鈕
-        showToast('功能建置中');
+        if(!isManager()) return; // 按鈕本來就只有主管看得到，這裡多擋一次防呆
+        state.assignChecked = {}; // 每次重新進頁面都重設勾選，避免帶著上次沒送出的殘留選擇
+        state.view = "assign";
+        render();
+      }
+
+      else if(action === 'assign-pick-target'){
+        state.assignSelectedName = el.getAttribute('data-name');
+        render();
+      }
+
+      else if(action === 'assign-toggle-check'){
+        var toggleKey = el.getAttribute('data-key');
+        state.assignChecked[toggleKey] = !state.assignChecked[toggleKey];
+        render();
+      }
+
+      else if(action === 'assign-reassign-confirm'){
+        var aKey = el.getAttribute('data-key');
+        var assignedTo = el.getAttribute('data-assigned');
+        var aParts = aKey.split("|");
+        var target = state.assignSelectedName;
+        if(target){
+          if(confirm('此格已派給「'+assignedTo+'」，要改派給「'+target+'」嗎？')){
+            await assignRecountRemote(aParts[0], aParts[1], aParts[2], target);
+            showToast('已改派給「'+target+'」');
+            render();
+            return;
+          }
+        }
+        if(confirm('要取消「'+assignedTo+'」在這一格的指派嗎？')){
+          await unassignRecountRemote(aParts[0], aParts[1], aParts[2]);
+          showToast('已取消指派');
+          render();
+        }
+      }
+
+      else if(action === 'assign-submit'){
+        if(!state.assignSelectedName){ showToast('請先選擇要指派的人'); return; }
+        var keysToAssign = Object.keys(state.assignChecked).filter(function(k){ return state.assignChecked[k]; });
+        if(keysToAssign.length === 0){ showToast('請勾選要指派的格子'); return; }
+        el.disabled = true;
+        el.textContent = '指派中…';
+        await Promise.all(keysToAssign.map(function(k){
+          var kParts = k.split("|");
+          return assignRecountRemote(kParts[0], kParts[1], kParts[2], state.assignSelectedName);
+        }));
+        showToast('已指派 '+keysToAssign.length+' 格給「'+state.assignSelectedName+'」');
+        state.assignChecked = {};
+        render();
       }
 
       else if(action === 'pick-identity-select'){
@@ -3491,6 +3757,12 @@ function bindEvents(){
       if(t && t.id === 'identity-search'){
         var listEl = document.getElementById('identity-list');
         if(listEl) listEl.innerHTML = renderIdentityListItems(t.value);
+        return;
+      }
+      // 複盤分配頁「指派給誰」的搜尋框：同一套即時過濾寫法
+      if(t && t.id === 'assign-target-search'){
+        var targetListEl = document.getElementById('assign-target-list');
+        if(targetListEl) targetListEl.innerHTML = renderAssignTargetListItems(t.value);
         return;
       }
       if(t && t.classList && t.classList.contains('expr-newinput')){
