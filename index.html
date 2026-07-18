@@ -137,7 +137,7 @@
   .assign-check{ font-size:18px; flex:0 0 auto; }
   .assign-row-locked{
     background:#f1ece1; color:var(--muted);
-    justify-content:space-between;
+    justify-content:space-between; flex-wrap:wrap; row-gap:6px;
   }
   .assign-badge{
     font-size:12px; font-weight:700; padding:3px 10px; border-radius:12px;
@@ -148,11 +148,9 @@
     font-size:11px; font-weight:700; padding:1px 7px; border-radius:10px;
     background:#e8f5ec; color:#2f7a3e; white-space:nowrap;
   }
-  .assign-round-tag{
-    display:inline-block; margin-left:6px;
-    font-size:11px; font-weight:700; padding:1px 7px; border-radius:10px;
-    background:#fdecea; color:#c0392b; white-space:nowrap;
-  }
+  /* 第二輪格子不再走指派，改用這個徽章顯示「已自動歸品牌負責人」；沒設定負責人時用 .no-owner 標紅 */
+  .assign-badge-second-round{ background:#f0e9fb; color:#6a3fa0; }
+  .assign-badge-second-round.no-owner{ background:#fdecea; color:#c0392b; }
   .assign-footer{
     position:sticky; bottom:0;
     padding:12px 18px;
@@ -406,6 +404,10 @@
   .mini-btn.marked{
     border-color:#2f7a3e; background:#e8f5ec; color:#2f7a3e;
   }
+  /* 已標記但尚未確認回寫的中繼狀態，跟「已確認」的綠色拉開區隔，避免兩顆按鈕看起來一樣 */
+  .mini-btn.pending-mark{
+    border-color:#c45a1e; background:#fdf0e4; color:#c45a1e;
+  }
   /* 彙總明細頁的型號登錄狀態徽章 */
   .confirm-status-badge{
     font-size:11px; font-weight:700; padding:4px 9px; border-radius:6px;
@@ -421,10 +423,10 @@
   }
   .recount-item.done{ background:#fafcfb; border-color:#cfe6d7; }
   .recount-item .ri-top{
-    display:flex; align-items:center; justify-content:space-between;
+    display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
     margin-bottom:12px; gap:8px;
   }
-  .recount-item .ri-title{ font-size:15px; font-weight:800; color:var(--ink); }
+  .recount-item .ri-title{ font-size:15px; font-weight:800; color:var(--ink); min-width:0; overflow-wrap:break-word; }
   .recount-item .ri-assignee{
     font-size:12px; font-weight:700; padding:3px 10px; border-radius:12px;
     background:#eef4fa; color:#2f5d8a; white-space:nowrap; flex:0 0 auto;
@@ -437,10 +439,15 @@
     background:#f0e9fb; color:#6a3fa0; white-space:nowrap; flex:0 0 auto;
   }
   .recount-item .ri-assign-badge.unassigned{ background:#f1ece1; color:var(--muted); }
+  /* 第二輪格子沒設定品牌負責人：無主格，標紅提醒主管去綁定，跟一般「未指派」的灰色區隔開 */
+  .recount-item .ri-assign-badge.no-owner{ background:#fdecea; color:#c0392b; }
   .recount-item .ri-second-round-tag{
     font-size:12px; font-weight:700; padding:3px 10px; border-radius:12px;
     background:#fdecea; color:#c0392b; white-space:nowrap; flex:0 0 auto;
   }
+  /* 主管視角下這裡會同時擠進指派徽章、第二輪標籤、狀態小標籤、取消複盤按鈕，容易比一般成員視角寬很多，
+     這裡讓 hdr-right 自己允許換行、靠右對齊，避免整排被撐開而讓按鈕或文字超出卡片邊框 */
+  .recount-item .hdr-right{ flex-wrap:wrap; justify-content:flex-end; row-gap:6px; }
   .recount-item .ri-nums{
     display:flex; align-items:flex-end; gap:10px;
   }
@@ -455,10 +462,18 @@
     font-family:inherit; color:var(--ink); background:#fff;
   }
   .recount-item .ri-input:focus{ outline:none; background:#fffdf9; }
+  /* 第二輪格子鎖給非負責人：輸入框反灰、不可點，跟一般可填寫的白底輸入框明顯不同 */
+  .recount-item .ri-input:disabled{
+    background:#f1ece1; color:var(--muted); border-color:var(--line); cursor:not-allowed;
+  }
   .recount-item .ri-calc-hint{
     font-size:12px; color:var(--good); font-weight:700; text-align:center; margin-top:3px;
   }
   .recount-item .ri-calc-hint.ri-calc-hint-error{ color:#c0392b; }
+  .recount-item .ri-lock-note{
+    grid-column:1 / -1; font-size:12px; color:#c45a1e; font-weight:700;
+    text-align:center; margin-top:4px;
+  }
   .recount-item .ri-actions{ margin-top:10px; text-align:right; }
   .recount-item .ri-confirm-btn{ margin-top:12px; width:auto; padding:9px 16px; font-size:13.5px; border-color:var(--good); color:var(--good); }
   .recount-item .ri-confirmed-status{
@@ -938,7 +953,9 @@ function isManager(){
   if(!current) return false;
   return (state.managers || []).indexOf(current) !== -1;
 }
-// 目前這台手機「看得到」的複盤格子 key 清單：主管看全部；非主管只看指派給自己的格子。
+// 目前這台手機「看得到」的複盤格子 key 清單：主管看全部；非主管看得到的分兩種——
+// 第一輪格子看「指派給自己」的；第二輪格子(isSecondRoundRecount)不走指派，直接看「自己是不是
+// 這格品牌的負責人之一」，等同「自動被指派」的效果，不用主管手動再派一次。
 // 這是唯一的過濾點——複盤清單、款式進度總覽、首頁徽章數字、背景同步的「清單有變動」比對都共用這份邏輯，
 // 不在各處各自重複判斷，也確保「指派資料同步回來後，變動提示橫幅算得出來」（見 syncFromBackend）。
 function visibleRecountKeys(){
@@ -947,6 +964,10 @@ function visibleRecountKeys(){
   var myName = getRecountUserName();
   if(!myName) return [];
   return allKeys.filter(function(k){
+    var r = state.recounts[k];
+    if(isSecondRoundRecount(r)){
+      return brandOwnersForKey(k).indexOf(myName) !== -1;
+    }
     return String(state.assignments[k] || "").trim() === myName;
   });
 }
@@ -1019,14 +1040,20 @@ async function remarkRecountForNextRoundRemote(style, color, size){
   var key = keyFor(style, color, size);
   var existing = state.recounts[key] || {};
   var prevRecount = existing;
+  var prevAssignment = state.assignments[key];
   state.recounts[key] = Object.assign({}, existing, {
     shelf: "", stock: "", assignee: "", confirmed: false, relogged: false, relogBy: "", relogAt: ""
   });
+  // 同步清掉上一輪的指派（樂觀更新）：第一輪指派的人不該在畫面重新整理前，還在複盤清單看得到這一格，
+  // 要等主管重新指派（畫面會提示優先派給品牌負責人）才會有人能再填這一格。後端 markRecount() 開第二輪
+  // 那段也會清指派，這裡只是讓本機畫面立刻反映，不用等網路來回。
+  delete state.assignments[key];
   try{
     await apiPost({ action:"markRecount", style:style, color:color, size:size, assignee:"" });
   }catch(e){
     console.error("remark recount for next round failed", e);
     state.recounts[key] = prevRecount;
+    if(prevAssignment !== undefined) state.assignments[key] = prevAssignment;
     showToast("開始第二輪失敗，請檢查網路");
   }
 }
@@ -1880,36 +1907,43 @@ function renderAssignChecklistStep(){
     var style = parts[0], color = parts[1], size = parts[2];
     var label = escapeHtml(style)+'-'+escapeHtml(color)+'-'+escapeHtml(size);
     var rowR = state.recounts[k];
+
+    // 第二輪格子不走指派：已經自動歸品牌負責人管，這裡只顯示狀態，不能勾選、也不能再手動改派
+    if(isSecondRoundRecount(rowR)){
+      var rowOwners = brandOwnersForKey(k);
+      var ownerBadgeHtml = rowOwners.length > 0
+        ? '<span class="assign-badge assign-badge-second-round">第二輪，已自動歸：'+escapeHtml(rowOwners.join('、'))+'</span>'
+        : '<span class="assign-badge assign-badge-second-round no-owner">⚠ 未設定負責人</span>';
+      return '<div class="assign-row assign-row-locked">'+
+        '<span style="min-width:0; overflow-wrap:break-word;">'+label+'</span>'+
+        ownerBadgeHtml+
+      '</div>';
+    }
+
     var confirmTagHtml = rowR && rowR.confirmed
       ? '<span class="assign-confirm-tag">✓已確認</span>' : '';
-    // 第二輪標籤：曾經確認回寫過(有快照)，現在又還沒確認。旁邊帶出這個品牌的負責人，
-    // 沒設定就顯示「未設定負責人」，方便主管指派時知道優先要派給誰(見 assign-submit 的提醒邏輯)。
-    var secondRoundTagHtml = "";
-    if(isSecondRoundRecount(rowR)){
-      var rowOwners = (state.brandOwners[brandOfKey(k)] || []).filter(function(n){ return !!n; });
-      var rowOwnerText = rowOwners.length > 0 ? rowOwners.join('、') : "未設定負責人";
-      secondRoundTagHtml = '<span class="assign-round-tag">⚠ 第二輪，負責人：'+escapeHtml(rowOwnerText)+'</span>';
-    }
     var assignedTo = String(state.assignments[k] || "").trim();
     if(assignedTo){
       return '<div class="assign-row assign-row-locked" data-action="assign-reassign-confirm" data-key="'+escapeHtml(k)+'" data-assigned="'+escapeHtml(assignedTo)+'">'+
-        '<span>'+label+confirmTagHtml+secondRoundTagHtml+'</span>'+
+        '<span style="min-width:0; overflow-wrap:break-word;">'+label+confirmTagHtml+'</span>'+
         '<span class="assign-badge">已派：'+escapeHtml(assignedTo)+'</span>'+
       '</div>';
     }
     var checked = !!state.assignChecked[k];
     return '<div class="assign-row'+(checked?' checked':'')+'" data-action="assign-toggle-check" data-key="'+escapeHtml(k)+'">'+
       '<span class="assign-check">'+(checked?'☑':'☐')+'</span>'+
-      '<span>'+label+confirmTagHtml+secondRoundTagHtml+'</span>'+
+      '<span>'+label+confirmTagHtml+'</span>'+
     '</div>';
   }
 
-  // 產生一個型號的收合區塊，標題直接顯示「已勾／未派／共」三個數字，不用展開就能掌握狀態
+  // 產生一個型號的收合區塊，標題直接顯示「已勾／未派／共」三個數字，不用展開就能掌握狀態。
+  // 第二輪格子不算進「未派」：這批已經自動歸品牌負責人管，不需要、也不能在這裡指派。
   function buildStyleGroup(styleName, keysForStyle){
     var total = keysForStyle.length;
-    var assignedCount = keysForStyle.filter(function(k){ return !!String(state.assignments[k]||"").trim(); }).length;
-    var unassignedCount = total - assignedCount;
-    var checkedCount = keysForStyle.filter(function(k){ return state.assignChecked[k]; }).length;
+    var assignableKeys = keysForStyle.filter(function(k){ return !isSecondRoundRecount(state.recounts[k]); });
+    var assignedCount = assignableKeys.filter(function(k){ return !!String(state.assignments[k]||"").trim(); }).length;
+    var unassignedCount = assignableKeys.length - assignedCount;
+    var checkedCount = assignableKeys.filter(function(k){ return state.assignChecked[k]; }).length;
     var expanded = !!state.assignExpandedStyles[styleName];
     var rowsHtml = keysForStyle.map(buildAssignRow).join("");
     return '<div class="style-group'+(expanded?' expanded':'')+'">'+
@@ -2604,9 +2638,11 @@ function renderSummary(){
           var rNote = String(recountR.note || "").trim();
           var noteBtnHtml = '<button class="mini-btn'+(rNote?' marked':'')+'" data-action="open-recount-note-modal" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">'+(rNote?'✎有備註':'✎備註')+'</button>';
           // 按鈕文字盡量短：欄寬是由這欄最寬的子元素撐出來的，文字越短欄位越窄，橫向捲動距離越少
+          // 已確認（回寫完成，最終狀態）用綠色，跟全站「已確認」的配色一致；已標記但還沒確認（中繼狀態）
+          // 改用琥珀色，呼應「複盤處理中」徽章的顏色——兩顆按鈕顏色差夠多，不會誤按
           var markToggleBtnHtml = recountR.confirmed
             ? '<button class="mini-btn marked" data-action="remark-recount-next-round" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已確認</button>'
-            : '<button class="mini-btn marked" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已標記</button>';
+            : '<button class="mini-btn pending-mark" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已標記</button>';
           recountCell = '<td class="num" style="white-space:nowrap;">'+
             '<div style="display:flex; flex-direction:column; gap:4px; align-items:flex-end;">'+
               markToggleBtnHtml+
@@ -2805,6 +2841,28 @@ function brandOfRecountKey(key){
   return (g && g.brand) ? g.brand : "";
 }
 
+// 取得某個複盤 key 所屬品牌的負責人名單（最多兩位，沒設定品牌負責人或沒品牌回傳空陣列）——
+// 第二輪格子的「自動可見範圍」(visibleRecountKeys)跟「誰能填數字」(canEditRecountKey)共用
+// 同一份判斷，避免各寫一份邏輯之後跑掉不同步。
+function brandOwnersForKey(key){
+  var brand = brandOfRecountKey(key);
+  if(!brand) return [];
+  return (state.brandOwners[brand] || []).filter(function(n){ return !!n; });
+}
+
+// 目前這台手機的身分是否可以填寫某一格的複盤數字：主管一律可以；第二輪格子(isSecondRoundRecount)
+// 不再走指派，只有這格所屬品牌的負責人可以，其他人一律鎖住——即使因為畫面還沒重整而看得到這格
+// (見 patchRecountItemDisplay 的鎖定就地更新)，也不能填。第一輪格子沒有額外的編輯限制：
+// 看得到清單(visibleRecountKeys)就代表已經被指派，跟現行規則一致。
+function canEditRecountKey(key, r){
+  if(isManager()) return true;
+  if(isSecondRoundRecount(r)){
+    var myName = getRecountUserName();
+    return !!myName && brandOwnersForKey(key).indexOf(myName) !== -1;
+  }
+  return true;
+}
+
 // 就地更新單一複盤項目的「複盤加總」「差異」顯示，跟初盤 updateChipsInPlace() 同一套精神：
 // 輸入框 DOM 完全不動、不整頁重畫，手機鍵盤不會因為重畫而收起。
 // wasDone/isDoneNow 是這格「架上+庫存是否都已填」在這次修改前後的狀態，用來同步調整
@@ -2813,6 +2871,12 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   if(!itemEl) return;
   var r = state.recounts[key];
   if(!r) return;
+  // 第二輪/負責人/編輯權限：清單本身不會因背景同步增減項目(見上面呼叫端的說明)，但格子的
+  // 「能不能編輯」會因為別人把這格推進第二輪而改變，所以這裡要先算好，後面同時拿來鎖輸入框、
+  // 更新完成回寫按鈕、更新主管視角的指派徽章。
+  var secondRoundNow = isSecondRoundRecount(r);
+  var keyOwners = secondRoundNow ? brandOwnersForKey(key) : [];
+  var editableNow = canEditRecountKey(key, r);
   var c = state.counts[key];
   // 已確認且有快照的格子改讀快照，不讀 state.counts——跟 buildRecountItem() 是同一套邏輯，
   // 這裡另外複製一份是因為背景同步的就地更新完全不會經過 buildRecountItem()，兩邊都要改才不會
@@ -2842,7 +2906,11 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
     {field:'note',  raw:noteRaw,  selector:'.ri-note-input',                hasCalcHint:false}
   ].forEach(function(entry){
     var inputEl = itemEl.querySelector(entry.selector);
-    if(!inputEl || document.activeElement === inputEl) return;
+    if(!inputEl) return;
+    // 架上/庫存輸入框的鎖定狀態要立刻反映，即使使用者正在打字也要鎖（代表權限已經被收回，
+    // 瀏覽器會自動把焦點移開，這是預期行為，不是誤觸）；備註欄不鎖，不受這裡影響
+    if(entry.field !== 'note') inputEl.disabled = !editableNow;
+    if(document.activeElement === inputEl) return;
     if(inputEl.value !== entry.raw) inputEl.value = entry.raw;
     if(!entry.hasCalcHint) return;
     // 算式提示（例如「= 80」）跟著同步：有算式符號才顯示，沒有就把提示拿掉
@@ -2907,6 +2975,43 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   var diffEl = itemEl.querySelector('.ri-diff-val');
   if(diffEl) diffEl.innerHTML = diffHtml;
 
+  // 就地補上/移除「完成回寫」按鈕：架上/庫存兩格填完的當下就要能按，不用等使用者手動點「更新」整頁重畫；
+  // 沒有編輯權限(第二輪的非負責人)一律不顯示按鈕，即使剛好兩格都有值
+  var confirmSectionEl = itemEl.querySelector('.ri-confirm-section');
+  if(confirmSectionEl){
+    var keyParts = key.split("|");
+    confirmSectionEl.innerHTML = buildRecountConfirmSectionHtml(r, keyParts[0], keyParts[1], keyParts[2], recountVal, editableNow);
+  }
+
+  // 就地補上/移除鎖定提示：權限狀態改變時（例如這格剛被別人推進第二輪，畫面還沒手動重整）要立刻反映，
+  // 不能讓使用者以為自己還能填
+  var fieldsEl = itemEl.querySelector('.ri-fields');
+  var lockNoteEl = fieldsEl ? fieldsEl.querySelector('.ri-lock-note') : null;
+  if(!editableNow){
+    var lockText = '🔒 ' + (keyOwners.length > 0 ? '限負責人：'+keyOwners.join('、')+' 可填寫' : '限品牌負責人可填寫（尚未設定負責人）');
+    if(!lockNoteEl && fieldsEl){
+      lockNoteEl = document.createElement('div');
+      lockNoteEl.className = 'ri-lock-note';
+      fieldsEl.appendChild(lockNoteEl);
+    }
+    if(lockNoteEl) lockNoteEl.textContent = lockText;
+  } else if(lockNoteEl){
+    lockNoteEl.remove();
+  }
+
+  // 就地更新主管視角的指派徽章：第二輪格子自動歸負責人管、沒設負責人要標紅提醒主管去綁定
+  var assignBadgeEl = itemEl.querySelector('.ri-assign-badge');
+  if(assignBadgeEl){
+    if(secondRoundNow){
+      assignBadgeEl.className = 'ri-assign-badge' + (keyOwners.length > 0 ? '' : ' no-owner');
+      assignBadgeEl.textContent = keyOwners.length > 0 ? '自動歸：'+keyOwners.join('、') : '⚠ 未設定負責人';
+    } else {
+      var assignedToNow = String(state.assignments[key] || "").trim();
+      assignBadgeEl.className = 'ri-assign-badge' + (assignedToNow ? '' : ' unassigned');
+      assignBadgeEl.textContent = assignedToNow ? '已派：'+assignedToNow : '未指派';
+    }
+  }
+
   // 就地更新狀態小標籤（尚無人複盤／OO 處理中／OO 複盤中／已由 OO 複盤）
   var badge = computeRecountBadge(r, isDoneNow);
   var badgeEl = itemEl.querySelector('.ri-assignee');
@@ -2916,7 +3021,6 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   }
 
   // 就地補上/移除「⚠ 第二輪複盤」標籤，跟 buildRecountItem() 的順序一致：插在狀態小標籤(.ri-assignee)之前
-  var secondRoundNow = isSecondRoundRecount(r);
   var secondRoundTagEl = itemEl.querySelector('.ri-second-round-tag');
   if(secondRoundNow){
     if(!secondRoundTagEl && badgeEl){
@@ -3255,20 +3359,28 @@ function renderRecount(){
     var stockCalcHint = (stockFilled && /[+×xX*＊＋]/.test(stockRaw)) ? '<div class="ri-calc-hint">= '+recountStockVal+'</div>' : '';
     var badge = computeRecountBadge(r, recountVal !== null);
     var countedBy = (firstSource && firstSource.countedBy) ? String(firstSource.countedBy).trim() : "";
-    // 指派標籤：只有主管看得到（非主管看到的本來就只有指派給自己的格子，不用再標一次）
+    // 第二輪判定跟負責人名單：第二輪格子不走指派，這裡先算出來給指派徽章、鎖定提示、完成回寫按鈕共用
+    var secondRoundNow = isSecondRoundRecount(r);
+    var keyOwners = secondRoundNow ? brandOwnersForKey(k) : [];
+    var editable = canEditRecountKey(k, r);
+    // 指派標籤：只有主管看得到（非主管看到的本來就只有自己有權限的格子，不用再標一次）。
+    // 第二輪格子不再顯示「已派/未指派」——改顯示自動歸屬的負責人；沒設定負責人就是無主格，
+    // 明顯標紅提醒主管去綁定（見「品牌負責人管理」設定頁）。
     var assignedTo = String(state.assignments[k] || "").trim();
-    var assignBadgeHtml = manager
-      ? '<span class="ri-assign-badge'+(assignedTo?'':' unassigned')+'">'+(assignedTo?'已派：'+escapeHtml(assignedTo):'未指派')+'</span>'
-      : '';
-
-    // 完成回寫：所有複盤人都看得到(不再限主管)，架上/庫存複盤都填完才能按；已確認的格子改顯示狀態，不再顯示按鈕
-    var confirmSectionHtml = "";
-    if(r.confirmed){
-      var confirmedAtText = r.confirmedAt ? formatConfirmedAt(r.confirmedAt) : "";
-      confirmSectionHtml = '<div class="ri-confirmed-status">✓ 已確認（'+escapeHtml(r.confirmedBy || "")+(confirmedAtText ? '，'+confirmedAtText : '')+'）</div>';
-    } else if(recountVal !== null){
-      confirmSectionHtml = '<button class="btn secondary ri-confirm-btn" data-action="confirm-recount" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'">完成回寫（更新彙總）</button>';
+    var assignBadgeHtml = "";
+    if(manager){
+      if(secondRoundNow){
+        assignBadgeHtml = keyOwners.length > 0
+          ? '<span class="ri-assign-badge">自動歸：'+escapeHtml(keyOwners.join('、'))+'</span>'
+          : '<span class="ri-assign-badge no-owner">⚠ 未設定負責人</span>';
+      } else {
+        assignBadgeHtml = '<span class="ri-assign-badge'+(assignedTo?'':' unassigned')+'">'+(assignedTo?'已派：'+escapeHtml(assignedTo):'未指派')+'</span>';
+      }
     }
+
+    // 完成回寫：所有有權限的複盤人都看得到(不只主管)，架上/庫存複盤都填完才能按；
+    // 已確認的格子改顯示狀態；沒有編輯權限(第二輪的非負責人)一律不顯示按鈕
+    var confirmSectionHtml = buildRecountConfirmSectionHtml(r, style, color, size, recountVal, editable);
 
     // 取消複盤的入口權責在彙總明細（key in 人員依 ERP 比對決定要不要複盤），複盤清單這裡只留給主管當例外處理的後路
     var unmarkBtnHtml = manager
@@ -3276,7 +3388,13 @@ function renderRecount(){
       : '';
 
     // 第二輪標籤：曾經確認回寫過(有快照)，現在又還沒確認，代表這格被重新標記進入下一輪
-    var secondRoundTagHtml = isSecondRoundRecount(r) ? '<span class="ri-second-round-tag">⚠ 第二輪複盤</span>' : '';
+    var secondRoundTagHtml = secondRoundNow ? '<span class="ri-second-round-tag">⚠ 第二輪複盤</span>' : '';
+
+    // 鎖定提示：第二輪格子只有品牌負責人跟主管能填，其他人（例如畫面還沒重整、還留著這張卡片的
+    // 原第一輪指派者）架上/庫存輸入框反灰鎖定，用文字說明原因，不是無聲失敗
+    var lockNoteHtml = editable ? "" : '<div class="ri-lock-note">🔒 '+
+      (keyOwners.length > 0 ? '限負責人：'+escapeHtml(keyOwners.join('、'))+' 可填寫' : '限品牌負責人可填寫（尚未設定負責人）')+
+      '</div>';
 
     return '<div class="recount-item'+(recountVal!==null?' done':'')+'" data-key="'+escapeHtml(k)+'">'+
       '<div class="ri-top">'+
@@ -3301,16 +3419,17 @@ function renderRecount(){
         '<div class="ri-arrow">=</div>'+
         '<div class="ri-num"><div class="ri-num-label">差異</div><div class="ri-num-val ri-diff-val">'+diffHtml+'</div></div>'+
       '</div>'+
-      confirmSectionHtml+
+      '<div class="ri-confirm-section">'+confirmSectionHtml+'</div>'+
       '<div class="ri-fields">'+
         '<div class="ri-num"><div class="ri-num-label">架上（可加可乘）</div>'+
           '<input class="ri-input" type="text" inputmode="text" value="'+escapeHtml(shelfRaw)+'" placeholder="如 50+30" '+
-            'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-field="shelf" data-action="recount-input">'+
+            'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-field="shelf" data-action="recount-input"'+(editable?'':' disabled')+'>'+
           shelfCalcHint+'</div>'+
         '<div class="ri-num"><div class="ri-num-label">庫存（可加可乘）</div>'+
           '<input class="ri-input" type="text" inputmode="text" value="'+escapeHtml(stockRaw)+'" placeholder="如 50+30" '+
-            'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-field="stock" data-action="recount-input">'+
+            'data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" data-field="stock" data-action="recount-input"'+(editable?'':' disabled')+'>'+
           stockCalcHint+'</div>'+
+        lockNoteHtml+
       '</div>'+
       '<div class="ri-note">'+
         '<span class="ri-claim-label">備註：</span>'+
@@ -3391,9 +3510,9 @@ function renderRecount(){
     '</div>'+
   '</div>'+
   '<main>'+
-    '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 14px; margin-bottom:12px; background:#fcfbf8; border:1px solid var(--line); border-radius:10px; font-size:13px;">'+
-      '<span style="color:var(--muted);">你的盤點身分：<strong style="color:var(--ink);">'+(getRecountUserName() ? escapeHtml(getRecountUserName()) : '尚未設定')+'</strong></span>'+
-      '<div style="display:flex; gap:6px;">'+
+    '<div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:10px 14px; margin-bottom:12px; background:#fcfbf8; border:1px solid var(--line); border-radius:10px; font-size:13px;">'+
+      '<span style="color:var(--muted); min-width:0; overflow-wrap:break-word;">你的盤點身分：<strong style="color:var(--ink);">'+(getRecountUserName() ? escapeHtml(getRecountUserName()) : '尚未設定')+'</strong></span>'+
+      '<div style="display:flex; flex-wrap:wrap; gap:6px;">'+
         (isManager() ? '<button class="mini-btn" data-action="recount-assign">複盤分配</button>' : '')+
         '<button class="mini-btn" data-action="change-recount-username">'+(getRecountUserName() ? '改名字' : '設定名字')+'</button>'+
       '</div>'+
@@ -3667,6 +3786,21 @@ function formatConfirmedAt(iso){
   }catch(e){ return ""; }
 }
 
+// 完成回寫區塊的 HTML：buildRecountItem() 首次畫出、patchRecountItemDisplay() 就地更新都呼叫這裡，
+// 避免兩處各寫各的邏輯之後互相漂移——這是修「複盤數字填完，完成回寫按鈕沒有立刻出現，還要手動按更新」
+// 這個問題的關鍵：填完架上/庫存兩格觸發就地更新時，按鈕要能跟著補上來，不用等使用者手動整頁刷新。
+// editable 沒帶(undefined)時預設當作 true，維持這個函式在其他呼叫點的原本行為；
+// 只有 buildRecountItem/patchRecountItemDisplay 會明確傳入 canEditRecountKey() 算出來的結果。
+function buildRecountConfirmSectionHtml(r, style, color, size, recountVal, editable){
+  if(r.confirmed){
+    var confirmedAtText = r.confirmedAt ? formatConfirmedAt(r.confirmedAt) : "";
+    return '<div class="ri-confirmed-status">✓ 已確認（'+escapeHtml(r.confirmedBy || "")+(confirmedAtText ? '，'+confirmedAtText : '')+'）</div>';
+  } else if(recountVal !== null && editable !== false){
+    return '<button class="btn secondary ri-confirm-btn" data-action="confirm-recount" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'">完成回寫（更新彙總）</button>';
+  }
+  return "";
+}
+
 // ---------- Events ----------
 function bindEvents(){
   var app = document.getElementById("app");
@@ -3802,29 +3936,12 @@ function bindEvents(){
 
       else if(action === 'assign-submit'){
         if(!state.assignSelectedName){ showToast('請先選擇要指派的人'); return; }
-        var keysToAssign = Object.keys(state.assignChecked).filter(function(k){ return state.assignChecked[k]; });
-        if(keysToAssign.length === 0){ showToast('請勾選要指派的格子'); return; }
-
-        // 第二輪格子的指派建議：目前選的人不是兩位負責人的任一位，先提醒一次，不強制鎖，主管仍可例外改派
-        var mismatchedBrands = [];
-        keysToAssign.forEach(function(k){
-          var kr = state.recounts[k];
-          if(!isSecondRoundRecount(kr)) return;
-          var kb = brandOfRecountKey(k);
-          var kOwners = (state.brandOwners[kb] || []).filter(function(n){ return !!n; });
-          if(kOwners.length > 0 && kOwners.indexOf(state.assignSelectedName) === -1 && mismatchedBrands.indexOf(kb) === -1){
-            mismatchedBrands.push(kb);
-          }
+        // 第二輪格子不走指派，過濾掉萬一殘留在勾選狀態裡的第二輪 key（正常情況下 buildAssignRow
+        // 不會讓這種格子顯示可勾選列，這裡只是防呆）
+        var keysToAssign = Object.keys(state.assignChecked).filter(function(k){
+          return state.assignChecked[k] && !isSecondRoundRecount(state.recounts[k]);
         });
-        if(mismatchedBrands.length > 0){
-          var ownerList = mismatchedBrands.map(function(b){
-            var bOwners = (state.brandOwners[b] || []).filter(function(n){ return !!n; });
-            return b+'（建議：'+bOwners.join('或')+'）';
-          }).join('、');
-          if(!confirm('以下品牌的格子是第二輪複盤，建議指派給負責人：\n'+ownerList+'\n\n仍要指派給「'+state.assignSelectedName+'」嗎？')){
-            return;
-          }
-        }
+        if(keysToAssign.length === 0){ showToast('請勾選要指派的格子'); return; }
 
         el.disabled = true;
         el.textContent = '指派中…';
@@ -3939,6 +4056,11 @@ function bindEvents(){
         var cfKey = keyFor(cfStyle, cfColor, cfSize);
         var cfR = state.recounts[cfKey];
         if(!cfR) return;
+        // 防呆：這格如果已經被鎖住(第二輪的非負責人)，按鈕理論上不會出現，這裡再擋一次避免繞過畫面
+        if(!canEditRecountKey(cfKey, cfR)){
+          showToast('這一格已鎖定，只有品牌負責人或主管能操作');
+          return;
+        }
         var cfShelfVal = parseExpr(String(cfR.shelf || ""));
         var cfStockVal = parseExpr(String(cfR.stock || ""));
         var cfC = state.counts[cfKey];
@@ -4490,6 +4612,11 @@ function bindEvents(){
         var field = t.getAttribute('data-field'); // "shelf" 或 "stock"
         var val = t.value.trim(); // 直接存算式文字（如 "50+30"），對照時用 parseExpr 算
         var recountKey = keyFor(style, color, size);
+        // 防呆：這格如果已經被鎖住(第二輪的非負責人)，就算輸入框在 disabled 生效前已經打了字，
+        // 失焦也不存檔，避免繞過畫面上的鎖
+        if(!canEditRecountKey(recountKey, state.recounts[recountKey])){
+          return;
+        }
         var errKey = recountKey + "::" + field;
         var err = validateExpr(val);
         if(err){
