@@ -1988,11 +1988,25 @@ function renderAssignChecklistStep(){
         '<span class="assign-badge">已派：'+escapeHtml(assignedTo)+'</span>'+
       '</div>';
     }
+    // 走到這裡代表沒有第二輪、沒有確認/定案、也沒有指派——才是真正還沒處理、可以勾選指派的格子
     var checked = !!state.assignChecked[k];
     return '<div class="assign-row'+(checked?' checked':'')+'" data-action="assign-toggle-check" data-key="'+escapeHtml(k)+'">'+
       '<span class="assign-check">'+(checked?'☑':'☐')+'</span>'+
-      '<span>'+label+confirmTagHtml+'</span>'+
+      '<span>'+label+'</span>'+
     '</div>';
+  }
+
+  // 單一格子的資料如果格式異常，這裡擋下來，只讓那一格顯示錯誤列，不要讓整個指派頁畫不出來
+  // ——複盤頁的 safeBuildRecountItem() 已經吃過這個教訓，指派頁比照辦理。
+  function safeBuildAssignRow(k){
+    try{
+      return buildAssignRow(k);
+    }catch(e){
+      console.error("buildAssignRow failed for key", k, e);
+      return '<div class="assign-row assign-row-locked">'+
+        '<span style="color:#c0392b;">⚠️ 「'+escapeHtml(k)+'」資料格式異常，暫時無法顯示，不影響其他格子</span>'+
+      '</div>';
+    }
   }
 
   // 產生一個型號的收合區塊，標題直接顯示「已勾／未派／共」三個數字，不用展開就能掌握狀態。
@@ -2008,7 +2022,7 @@ function renderAssignChecklistStep(){
     var unassignedCount = assignableKeys.length - assignedCount;
     var checkedCount = assignableKeys.filter(function(k){ return state.assignChecked[k]; }).length;
     var expanded = !!state.assignExpandedStyles[styleName];
-    var rowsHtml = keysForStyle.map(buildAssignRow).join("");
+    var rowsHtml = keysForStyle.map(safeBuildAssignRow).join("");
     return '<div class="style-group'+(expanded?' expanded':'')+'">'+
       '<div class="style-group-header" data-action="assign-toggle-style" data-style="'+escapeHtml(styleName)+'">'+
         '<div class="sg-left"><div class="sg-name">'+escapeHtml(styleName)+
@@ -2752,10 +2766,6 @@ function renderSummary(){
     return t;
   }
 
-  // 型號認領進度：品牌層級「已完成」判定用，key 是品牌名稱("" = 未分組)
-  var claimProgressByBrand = {};
-  computeClaimBrandProgress().forEach(function(cg){ claimProgressByBrand[cg.brand] = cg; });
-
   // 依動態計算的品牌分組組裝畫面（從 state.structure 即時算出）
   var groupsHtml = "";
   var grandMissing = 0;
@@ -2812,16 +2822,20 @@ function renderSummary(){
       ? (function(){ var c = !!state.claims[groupName]; return '<button class="mini-btn'+(c?' claimed':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(groupName)+'">'+(c?'✓ 已認領':'未認領')+'</button>'; })()
       : '';
     var groupConfirmStatusHtml = g.brand === null ? buildConfirmStatusBadgeHtml(groupName) : '';
-    // 品牌層(未展開就看得到的最外層)狀態標籤：判定沿用 computeClaimBrandProgress(認領進度)跟
-    // computeStyleConfirmStatus(複盤進度，每個型號都查一次)，兩個訊號獨立算，再用優先序組字：
+    // 品牌層(未展開就看得到的最外層)狀態標籤：兩個訊號都直接從 groupStyles 算——這就是這次迴圈
+    // 實際拿來畫這個品牌底下型號列表的同一份陣列，不再另外呼叫 computeClaimBrandProgress() 重新
+    // 分組一次認領進度(舊寫法要點兩套獨立算出來的分組結果對齊，任何一邊分組結果有落差都會讓
+    // 「全部認領」判定不出來；直接用同一份 groupStyles 判定，兩者保證一致，不會再對不起來)。
+    // 再用優先序組字：
     //   1. 品牌底下任一型號還有未解決的複盤(⚠處理中或🔔可重新登錄) → 一定顯示「⚠ 複盤處理中」
     //      (不管認領完了沒，這是最需要主管注意的訊號，優先權最高，避免誤以為認領完=複盤也結束了)；
     //      這時如果剛好也全部認領了，額外加顯示「✓ 全部認領」，讓主管知道 ERP 端已經沒事，
     //      卡住的只有複盤。
     //   2. 沒有未解決的複盤，且全部認領 → 兩件事都做完了，顯示「✅ 已完成」(取代「全部認領」)。
     //   3. 其餘(還沒全部認領、複盤也沒問題) → 維持不顯示標籤。
-    var brandClaimProgress = g.brand !== null ? claimProgressByBrand[g.brand] : null;
-    var brandAllClaimed = !!(brandClaimProgress && brandClaimProgress.totalCount > 0 && brandClaimProgress.doneCount === brandClaimProgress.totalCount);
+    var brandAllClaimed = g.brand !== null && groupStyles.length > 0 && groupStyles.every(function(st){
+      return !!state.claims[st.style];
+    });
     var brandHasUnresolvedRecount = g.brand !== null && groupStyles.some(function(st){
       var s = computeStyleConfirmStatus(st.style).status;
       return s === "pending" || s === "needsRelog";
@@ -3393,38 +3407,6 @@ function buildConfirmStatusBadgeHtml(styleName){
     return '<span class="confirm-status-badge done">✅ 已完成</span>';
   }
   return "";
-}
-
-// ---------- 型號認領進度判定（依品牌彙總「型號」層級的認領情形，避免多人同時把同一型號登入 ERP） ----------
-// 給彙總明細頁的品牌標題用：品牌底下所有型號都認領了才算該品牌「已完成」。
-// 沒有獨立的認領總覽頁面，這個判定函式直接接到 renderSummary 的品牌標題層。
-function computeClaimBrandProgress(){
-  var groups = computeBrandGroups(); // [{brand: 名稱或null, styles:[型號名稱,...]}, ...]
-  var byBrand = {}; // 品牌標籤("" = 未分組) -> [型號名稱,...]
-  groups.forEach(function(g){
-    var label = g.brand || "";
-    if(!byBrand[label]) byBrand[label] = [];
-    g.styles.forEach(function(s){
-      if(findStyleIdx(s) === -1) return; // 型號還沒建立在結構裡，跳過
-      byBrand[label].push(s);
-    });
-  });
-  var orderMap = {};
-  BRAND_ORDER.forEach(function(name, idx){ orderMap[name] = idx; });
-  var brandNames = Object.keys(byBrand).filter(function(b){ return b !== ""; }).sort(function(a,b){
-    var ai = orderMap.hasOwnProperty(a) ? orderMap[a] : 9999;
-    var bi = orderMap.hasOwnProperty(b) ? orderMap[b] : 9999;
-    if(ai !== bi) return ai - bi;
-    return a.localeCompare(b, 'zh-Hant');
-  });
-  var result = [];
-  if(byBrand[""] && byBrand[""].length > 0) result.push({ brand:"", styles: byBrand[""] });
-  brandNames.forEach(function(b){ if(byBrand[b].length > 0) result.push({ brand:b, styles: byBrand[b] }); });
-  result.forEach(function(g){
-    g.doneCount = g.styles.filter(function(s){ return !!state.claims[s]; }).length;
-    g.totalCount = g.styles.length;
-  });
-  return result;
 }
 
 
