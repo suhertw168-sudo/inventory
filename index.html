@@ -425,6 +425,11 @@
   .mini-btn.pending-mark{
     border-color:#c45a1e; background:#fdf0e4; color:#c45a1e;
   }
+  /* 「✓ 已核對」用獨立的青色系，不跟已認領(藍)/已確認(綠)/已定案(深灰) 任何一個共用，
+     避免「認領」跟「核對」這兩個獨立動作被誤認成同一件事——這正是這次要修的混淆問題 */
+  .mini-btn.verified{
+    border-color:#0d8a8a; background:#e0f5f5; color:#0d6e6e;
+  }
   /* 彙總明細頁的型號登錄狀態徽章 */
   .confirm-status-badge{
     font-size:11px; font-weight:700; padding:4px 9px; border-radius:6px;
@@ -698,7 +703,10 @@ var state = {
   recounts: {},         // key "style|color|size" -> {shelf, stock, note, assignee, markedAt, editingBy, editingAt} 複盤任務
   recountFilter: "",    // 複盤清單的認領人篩選（空=全部）
   recountBrandFilter: "", // 複盤清單的品牌篩選（空=全部）
+  showFinalizedRecounts: false, // 主管專用：預設不列出「已定案」的格子，開了才查閱得到(唯讀查閱用途)
   claims: {},            // key 型號名稱 -> true（已認領，避免多人同時把同一型號登入ERP）。沒有這個 key = 未認領
+  verified: {},          // key 型號名稱 -> true（key in 已核對 ERP 資料無差異）。認領≠核對，兩個獨立狀態，
+                          // 沒有這個 key = 未核對；沒有複盤任務時，要「認領+核對」才算完成(見 computeStyleConfirmStatus)
   people: [],            // 人員名單（姓名陣列），供「複盤/盤點身分」選單使用
   managers: [],          // 主管名單（姓名陣列），從人員名單中挑選，判定 isManager() 用
   assignments: {},       // key "style|color|size" -> 指派給的姓名，複盤分配用，跟「複盤人」(recounts[key].assignee) 是不同概念
@@ -982,14 +990,25 @@ function isManager(){
   if(!current) return false;
   return (state.managers || []).indexOf(current) !== -1;
 }
-// 目前這台手機「看得到」的複盤格子 key 清單：主管看全部；非主管看得到的分兩種——
-// 第一輪格子看「指派給自己」的；第二輪格子(isSecondRoundRecount)不走指派，直接看「自己是不是
-// 這格品牌的負責人之一」，等同「自動被指派」的效果，不用主管手動再派一次。
+// 目前這台手機「看得到」的複盤格子 key 清單：主管預設看全部，但「已定案」(第二輪或之後確認完成，
+// 不能再開下一輪)的格子預設濾掉，避免清單一直堆積已經結束的格子——開啟 state.showFinalizedRecounts
+// 開關(複盤清單頁「顯示已定案」)才會列出來供查閱，這批本來就是唯讀狀態，不受這個開關影響顯示樣式。
+// 非主管看得到的分兩種——第一輪格子看「指派給自己」的；第二輪格子(isSecondRoundRecount)不走指派，
+// 直接看「自己是不是這格品牌的負責人之一」，等同「自動被指派」的效果，不用主管手動再派一次。
+// 不管哪一種，只要這格「已經確認回寫過」(r.confirmed)，複盤人視角就立刻退場，不用等 key in 開
+// 第二輪才消失——這一條同時涵蓋「已確認」(第一輪定案)跟「已定案」(第二輪或之後定案)兩種已完結狀態，
+// 事情做完的格子就該從相關人的清單移除。
 // 這是唯一的過濾點——複盤清單、款式進度總覽、首頁徽章數字、背景同步的「清單有變動」比對都共用這份邏輯，
 // 不在各處各自重複判斷，也確保「指派資料同步回來後，變動提示橫幅算得出來」（見 syncFromBackend）。
 function visibleRecountKeys(){
   var allKeys = Object.keys(state.recounts || {});
-  if(isManager()) return allKeys;
+  if(isManager()){
+    if(state.showFinalizedRecounts) return allKeys;
+    return allKeys.filter(function(k){
+      var r = state.recounts[k];
+      return !(r.confirmed && r.everReopened);
+    });
+  }
   var myName = getRecountUserName();
   if(!myName) return [];
   return allKeys.filter(function(k){
@@ -997,6 +1016,7 @@ function visibleRecountKeys(){
     if(isSecondRoundRecount(r)){
       return brandOwnersForKey(k).indexOf(myName) !== -1;
     }
+    if(r.confirmed) return false;
     return String(state.assignments[k] || "").trim() === myName;
   });
 }
@@ -1238,6 +1258,9 @@ async function claimStyleRemote(style){
 }
 async function unclaimStyleRemote(style){
   delete state.claims[style];
+  // 取消認領連動清掉核對狀態，跟後端 unclaimStyle() 的連動邏輯一致——核對是針對這次認領的檢查結果，
+  // 沒認領就沒意義，這裡先在本地同步做一次，畫面不用等下一輪同步才反映
+  delete state.verified[style];
   try{
     await apiPost({ action:"unclaimStyle", style:style });
   }catch(e){ console.error("unclaim style failed", e); showToast("取消認領失敗，請檢查網路"); }
@@ -1246,7 +1269,24 @@ async function clearClaimsRemote(){
   try{
     await apiPost({ action:"clearClaims" });
     state.claims = {};
+    state.verified = {}; // 後端 clearClaims() 會連動清空核對分頁，本地同步清空
   }catch(e){ console.error("clear claims failed", e); showToast("清空失敗，請檢查網路"); }
+}
+
+// ---------- 型號核對 API ----------
+// 認領(登ERP)之後還要人工核對 ERP 資料有沒有差異，核對完成才算真的處理完，跟認領是兩個獨立狀態
+// (見 computeStyleConfirmStatus)。存法比照型號認領，走一樣的樂觀更新。
+async function verifyStyleRemote(style){
+  state.verified[style] = true; // 本地先更新(樂觀更新)
+  try{
+    await apiPost({ action:"verifyStyle", style:style });
+  }catch(e){ console.error("verify style failed", e); showToast("核對失敗，請檢查網路"); }
+}
+async function unverifyStyleRemote(style){
+  delete state.verified[style];
+  try{
+    await apiPost({ action:"unverifyStyle", style:style });
+  }catch(e){ console.error("unverify style failed", e); showToast("取消核對失敗，請檢查網路"); }
 }
 
 // ---------- 人員名單 API ----------
@@ -1531,6 +1571,7 @@ async function init(){
       if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
       if(all.recounts){ state.recounts = normalizeRecounts(all.recounts); }
       if(all.claims){ state.claims = all.claims; }
+      if(all.verified){ state.verified = all.verified; }
       if(Array.isArray(all.people)){ state.people = all.people.map(String); }
       if(Array.isArray(all.managers)){ state.managers = all.managers.map(String); }
       if(all.assignments){ state.assignments = normalizeAssignments(all.assignments); }
@@ -1672,8 +1713,13 @@ async function syncFromBackend(){
     // （見 manual-sync 呼叫端的說明）。資料量小，直接比 JSON 字串，不用另外寫一套深層 diff。
     var prevRecountsJSON = JSON.stringify(state.recounts);
     var prevAssignmentsJSON = JSON.stringify(state.assignments);
+    // 認領/核對狀態改變(有人剛認領、核對完成、或取消核對)也要能讓彙總頁的「有新資料」提示跳出來，
+    // 不然品牌層狀態(全部認領/核對中/已完成)明明變了，畫面卻靜悄悄的沒反應，理由同上面 recounts/assignments。
+    var prevClaimsJSON = JSON.stringify(state.claims);
+    var prevVerifiedJSON = JSON.stringify(state.verified);
     if(all.recounts){ state.recounts = normalizeRecounts(all.recounts); }
     if(all.claims){ state.claims = all.claims; }
+    if(all.verified){ state.verified = all.verified; }
     if(Array.isArray(all.people)){ state.people = all.people.map(String); }
     if(Array.isArray(all.managers)){ state.managers = all.managers.map(String); }
     if(all.assignments){ state.assignments = normalizeAssignments(all.assignments); }
@@ -1685,6 +1731,8 @@ async function syncFromBackend(){
     var hasChange = false;
     if(JSON.stringify(state.recounts) !== prevRecountsJSON) hasChange = true;
     if(JSON.stringify(state.assignments) !== prevAssignmentsJSON) hasChange = true;
+    if(JSON.stringify(state.claims) !== prevClaimsJSON) hasChange = true;
+    if(JSON.stringify(state.verified) !== prevVerifiedJSON) hasChange = true;
     // 比 counts：先比 key 數量，再逐個比 total
     var oldKeys = Object.keys(state.counts);
     var newKeys = Object.keys(newCountsRaw);
@@ -2791,6 +2839,7 @@ function renderSummary(){
         var styleTotalText = ' · 合計 '+built.total;
         var styleClaimed = !!state.claims[st.style];
         var styleConfirmStatusHtml = buildConfirmStatusBadgeHtml(st.style);
+        var styleVerifyBtnHtml = buildVerifyBtnHtml(st.style);
         bodyHtml += '<div class="style-group'+(built.missing > 0 ? ' has-missing' : '')+'">'+
           '<div class="style-group-header" data-action="toggle-style-group">'+
             '<div class="sg-left">'+
@@ -2800,6 +2849,7 @@ function renderSummary(){
             '<div class="hdr-right">'+
               styleConfirmStatusHtml+
               '<button class="mini-btn'+(styleClaimed?' claimed':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(st.style)+'">'+(styleClaimed?'✓ 已認領':'未認領')+'</button>'+
+              styleVerifyBtnHtml+
               '<div class="sg-arrow">›</div>'+
             '</div>'+
           '</div>'+
@@ -2822,19 +2872,26 @@ function renderSummary(){
       ? (function(){ var c = !!state.claims[groupName]; return '<button class="mini-btn'+(c?' claimed':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(groupName)+'">'+(c?'✓ 已認領':'未認領')+'</button>'; })()
       : '';
     var groupConfirmStatusHtml = g.brand === null ? buildConfirmStatusBadgeHtml(groupName) : '';
-    // 品牌層(未展開就看得到的最外層)狀態標籤：兩個訊號都直接從 groupStyles 算——這就是這次迴圈
-    // 實際拿來畫這個品牌底下型號列表的同一份陣列，不再另外呼叫 computeClaimBrandProgress() 重新
-    // 分組一次認領進度(舊寫法要點兩套獨立算出來的分組結果對齊，任何一邊分組結果有落差都會讓
-    // 「全部認領」判定不出來；直接用同一份 groupStyles 判定，兩者保證一致，不會再對不起來)。
+    var groupVerifyBtnHtml = g.brand === null ? buildVerifyBtnHtml(groupName) : '';
+    // 品牌層(未展開就看得到的最外層)狀態標籤：三個訊號都直接從 groupStyles 算——這就是這次迴圈
+    // 實際拿來畫這個品牌底下型號列表的同一份陣列，不再另外呼叫獨立函式重新分組一次(之前「全部認領」
+    // 判定不出來的 bug 就是這樣造成的)，兩邊保證是同一份資料，不會對不起來。
+    // 認領≠完成：認領只是登了 ERP，還要 key in 核對資料無差異(或走複盤鏈)才算真的完成
+    // (見 computeStyleConfirmStatus)，所以這裡分開算「全部認領」跟「全部完成」兩個獨立訊號，
     // 再用優先序組字：
     //   1. 品牌底下任一型號還有未解決的複盤(⚠處理中或🔔可重新登錄) → 一定顯示「⚠ 複盤處理中」
-    //      (不管認領完了沒，這是最需要主管注意的訊號，優先權最高，避免誤以為認領完=複盤也結束了)；
-    //      這時如果剛好也全部認領了，額外加顯示「✓ 全部認領」，讓主管知道 ERP 端已經沒事，
-    //      卡住的只有複盤。
-    //   2. 沒有未解決的複盤，且全部認領 → 兩件事都做完了，顯示「✅ 已完成」(取代「全部認領」)。
-    //   3. 其餘(還沒全部認領、複盤也沒問題) → 維持不顯示標籤。
+    //      (不管認領/核對完了沒，這是最需要主管注意的訊號，優先權最高，避免誤以為認領完=複盤也結束了)；
+    //      這時如果剛好也全部認領了，額外加顯示「🔎 核對中」，讓主管知道 ERP 端至少都登過了，
+    //      卡住的是複盤。
+    //   2. 沒有未解決的複盤，且底下所有型號都達到「✅ 完成」→ 顯示「✅ 已完成」。
+    //   3. 沒有未解決的複盤，全部認領但不是全部完成(還有型號認領了但還沒核對、也還沒標記複盤)
+    //      → 顯示「🔎 核對中」，明示還沒結束，不要讓「全部認領」被誤讀成「全部完成」。
+    //   4. 其餘(還沒全部認領、複盤也沒問題) → 維持不顯示標籤。
     var brandAllClaimed = g.brand !== null && groupStyles.length > 0 && groupStyles.every(function(st){
       return !!state.claims[st.style];
+    });
+    var brandAllDone = g.brand !== null && groupStyles.length > 0 && groupStyles.every(function(st){
+      return computeStyleConfirmStatus(st.style).status === "done";
     });
     var brandHasUnresolvedRecount = g.brand !== null && groupStyles.some(function(st){
       var s = computeStyleConfirmStatus(st.style).status;
@@ -2843,11 +2900,13 @@ function renderSummary(){
     var brandClaimTag = "";
     if(brandHasUnresolvedRecount){
       if(brandAllClaimed){
-        brandClaimTag += ' <span style="background:#f0e9fb; color:#6a3fa0; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">✓ 全部認領</span>';
+        brandClaimTag += ' <span style="background:#f0e9fb; color:#6a3fa0; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">🔎 核對中</span>';
       }
       brandClaimTag += ' <span style="background:#fdf0e4; color:#c45a1e; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">⚠ 複盤處理中</span>';
-    } else if(brandAllClaimed){
+    } else if(brandAllDone){
       brandClaimTag = ' <span style="background:#2f7a3e; color:#fff; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">✅ 已完成</span>';
+    } else if(brandAllClaimed){
+      brandClaimTag = ' <span style="background:#f0e9fb; color:#6a3fa0; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">🔎 核對中</span>';
     }
     groupsHtml += '<div class="brand-group'+(groupMissing > 0 ? ' has-missing' : '')+'" data-brand-name="'+escapeHtml(groupName)+'">'+
       '<div class="brand-group-header" data-action="toggle-brand-group">'+
@@ -2861,6 +2920,7 @@ function renderSummary(){
           '<div class="bg-totals">合計 '+groupTotal+'</div>'+
           groupConfirmStatusHtml+
           groupClaimBtnHtml+
+          groupVerifyBtnHtml+
           '<div class="bg-arrow">›</div>'+
         '</div>'+
       '</div>'+
@@ -3361,15 +3421,25 @@ function renderRecountProgressOverview(){
   '</div>';
 }
 
+// 這個型號底下有沒有任何一格複盤任務(不分顏色/尺寸)。給「要不要顯示核對完成按鈕」用——
+// 一個型號二選一：有差異就標記複盤(走複盤鏈)，無差異就核對完成，已經走複盤鏈的型號不用、
+// 也不該再顯示核對完成按鈕(見彙總明細 buildStyleTableHtml 呼叫端)。
+function styleHasRecountTasks(styleName){
+  return Object.keys(state.recounts).some(function(key){
+    return key.split("|")[0] === styleName;
+  });
+}
+
 // ---------- 型號登錄狀態判定（給彙總明細頁看，判斷這個型號要不要提醒 key in 人員處理） ----------
-// 實際流程是「key in 登 ERP → 差距大才標記複盤 → 複盤確認回寫 → 通知 key in 重登」，複盤是登錄後的
-// 例外處理，不是登錄前的門檻，所以這裡刻意分成四態：
+// 實際流程是「key in 登 ERP(認領) → 核對 ERP 有沒有差異 → 有差異才標記複盤 → 複盤確認回寫 → 通知
+// key in 重登」，複盤是核對後發現有差異才走的例外處理，不是必經流程，所以這裡刻意分成四態：
 //   "none"       - 這個型號沒有任何複盤任務、也還沒認領(還沒登 ERP)：正常，不用顯示徽章
 //   "pending"    - 有複盤任務還沒確認回寫：「⚠ 複盤處理中」，附上還差幾格
 //   "needsRelog" - 複盤任務全部確認回寫完畢，但還有格子沒標記重登：「🔔 可重新登錄」，通知 key in 重登 ERP
 //   "done"       - 最終態「✅ 已完成」，兩種情況都算：
 //                  (a) 有複盤任務，且全部確認回寫、全部重登(key in 點掉最後一個「可重新登錄」的那一刻起)
-//                  (b) 沒有任何複盤任務，但已認領(=已登錄 ERP，不需要複盤，登完就結束)
+//                  (b) 沒有任何複盤任務，但「已認領且已核對」(登了 ERP、也核對過資料無差異，才算真的
+//                      處理完——只認領還沒核對的空窗期不算完成，避免主管誤以為認領=結束，見 state.verified)
 // 跟複盤頁的 visibleRecountKeys() 是不同用途：彙總頁是給任何要登 ERP 的人看整體狀態，
 // 所以這裡故意讀「全部」複盤任務（不套用複盤頁「指派給自己才看得到」的過濾）。
 // confirmed/relogged 都是「格子等級」的旗標（見後端 Code.gs 的說明），不是型號等級的單一狀態——
@@ -3387,7 +3457,7 @@ function computeStyleConfirmStatus(styleName){
     if(!r.confirmed){ pending++; }
     else if(!r.relogged){ needsRelog = true; }
   });
-  if(!hasAny) return { status: state.claims[styleName] ? "done" : "none" };
+  if(!hasAny) return { status: (state.claims[styleName] && state.verified[styleName]) ? "done" : "none" };
   if(pending > 0) return { status:"pending", pending:pending };
   if(needsRelog) return { status:"needsRelog" };
   return { status:"done" };
@@ -3409,6 +3479,17 @@ function buildConfirmStatusBadgeHtml(styleName){
   return "";
 }
 
+// 「核對完成」按鈕／「✓ 已核對」標籤：只在「已認領＋沒有複盤任務」才顯示——一個型號二選一，
+// 有差異就標記複盤(走複盤鏈，不用核對)，沒差異就核對完成，這裡不重複跟複盤鏈的徽章搶位置。
+// 「✓ 已核對」保留可點擊(不是純文字)，點了跳確認對話框才會真的取消，給誤點一個回頭路
+// (見 unverify-style-confirm 的 click handler)。
+function buildVerifyBtnHtml(styleName){
+  if(!state.claims[styleName]) return "";
+  if(styleHasRecountTasks(styleName)) return "";
+  return state.verified[styleName]
+    ? '<button class="mini-btn verified" data-action="unverify-style-confirm" data-style="'+escapeHtml(styleName)+'">✓ 已核對</button>'
+    : '<button class="mini-btn" data-action="verify-style" data-style="'+escapeHtml(styleName)+'">核對完成</button>';
+}
 
 // ---------- 複盤清單畫面 ----------
 function renderRecount(){
@@ -3700,7 +3781,8 @@ function renderRecount(){
     '<div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:10px 14px; margin-bottom:12px; background:#fcfbf8; border:1px solid var(--line); border-radius:10px; font-size:13px;">'+
       '<span style="color:var(--muted); min-width:0; overflow-wrap:break-word;">你的盤點身分：<strong style="color:var(--ink);">'+(getRecountUserName() ? escapeHtml(getRecountUserName()) : '尚未設定')+'</strong></span>'+
       '<div style="display:flex; flex-wrap:wrap; gap:6px;">'+
-        (isManager() ? '<button class="mini-btn" data-action="recount-assign">複盤分配</button>' : '')+
+        (manager ? '<button class="mini-btn" data-action="recount-assign">複盤分配</button>' : '')+
+        (manager ? '<button class="mini-btn'+(state.showFinalizedRecounts?' marked':'')+'" data-action="toggle-show-finalized" title="已定案的格子不能再開下一輪，預設不列出，開啟後可查閱(唯讀)">'+(state.showFinalizedRecounts?'✓ 顯示已定案':'顯示已定案')+'</button>' : '')+
         '<button class="mini-btn" data-action="change-recount-username">'+(getRecountUserName() ? '改名字' : '設定名字')+'</button>'+
       '</div>'+
     '</div>'+
@@ -4188,6 +4270,26 @@ function bindEvents(){
         render_keepExpanded();
       }
 
+      else if(action === 'verify-style'){
+        // key in 核對 ERP 資料無差異，點下去直接算核對完成，不用二次確認(跟認領/標記複盤等其他
+        // 正向動作一致)；要取消才需要確認，見 unverify-style-confirm
+        var verifyStyleName = el.getAttribute('data-style');
+        verifyStyleRemote(verifyStyleName);
+        showToast('已核對「'+verifyStyleName+'」');
+        render_keepExpanded();
+      }
+
+      else if(action === 'unverify-style-confirm'){
+        // 「✓ 已核對」誤點時的回頭路：需要二次確認才會真的取消，避免手滑點掉核對紀錄
+        var unverifyStyleName = el.getAttribute('data-style');
+        if(!confirm('確定要取消「'+unverifyStyleName+'」的核對完成狀態嗎？\n\n取消後這個型號會變回「待核對」，需要重新核對一次。')){
+          return;
+        }
+        unverifyStyleRemote(unverifyStyleName);
+        showToast('已取消「'+unverifyStyleName+'」的核對狀態');
+        render_keepExpanded();
+      }
+
       else if(action === 'mark-recount'){
         var style = el.getAttribute('data-style');
         var color = el.getAttribute('data-color');
@@ -4270,7 +4372,7 @@ function bindEvents(){
         var cfC = state.counts[cfKey];
         var cfFirstShelfText = (cfC && cfC.shelf !== "" && cfC.shelf !== null && cfC.shelf !== undefined) ? cfC.shelf : "—";
         var cfFirstStockText = (cfC && cfC.stock !== "" && cfC.stock !== null && cfC.stock !== undefined) ? cfC.stock : "—";
-        if(!confirm('將以複盤數字（架上'+cfShelfVal+'／庫存'+cfStockVal+'）更新彙總，原初盤（架上'+cfFirstShelfText+'／庫存'+cfFirstStockText+'）將被取代。\n\n確定要確認嗎？')){
+        if(!confirm('將以複盤數字（架上'+cfShelfVal+'／庫存'+cfStockVal+'）更新彙總，原初盤（架上'+cfFirstShelfText+'／庫存'+cfFirstStockText+'）將被取代。\n\n回寫後此項目將從您的清單移除，請確認數字無誤。\n\n確定要確認嗎？')){
           return;
         }
         try{
@@ -4303,6 +4405,12 @@ function bindEvents(){
 
       else if(action === 'recount-brand-filter'){
         state.recountBrandFilter = el.getAttribute('data-brand');
+        render();
+      }
+
+      else if(action === 'toggle-show-finalized'){
+        // 純前端 UI 狀態，不用同步後端，重整頁面就會回到預設關閉
+        state.showFinalizedRecounts = !state.showFinalizedRecounts;
         render();
       }
 
