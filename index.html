@@ -409,11 +409,18 @@
     border-color:#2f7a3e; background:#e8f5ec; color:#2f7a3e;
   }
   /* 彙總明細「已認領」用獨立的藍色系，跟「已確認」的綠色(.marked)拉開區隔——這兩個是完全不同的
-     狀態(ERP登錄 vs 複盤回寫)，之前共用同一個綠色 class 容易混淆。顏色比預設按鈕的淺藍更深/更飽和，
-     避免跟「未認領」的預設藍色看起來一樣。 */
+     狀態(ERP登錄 vs 複盤回寫)，之前共用同一個綠色 class 容易混淆。實心深藍，跟「未認領」的空心灰
+     拉開對比，兩態一眼可辨。 */
   .mini-btn.claimed{
     border-color:#2f6fb0; background:#e3edf9; color:#1f5185;
   }
+  /* 「未認領」改成灰色描邊空心樣式，呈現「中性待辦」的觀感，跟已認領的實心深藍明顯不同；
+     這個空心灰也要跟「已定案」(.locked-final，深灰實心不可點標籤)在質感上明顯不同——
+     這裡是可點的空心按鈕(邊框淺、底色透明)，那裡是不可點的深色實心標籤，一眼就能分出可不可以點。 */
+  .mini-btn.unclaimed{
+    border-color:#c2c8cf; background:#fff; color:#8a929c;
+  }
+  .mini-btn.unclaimed:active{ background:#f1f3f5; color:#5a6472; }
   /* 第二輪(或之後)確認回寫的最終定案：故意不跟「已確認」共用綠色，改用深灰/深藍，視覺上明顯是
      「封存」的顏色，一眼就能跟還能繼續操作的綠色「已確認」分開。改成不可點的 <span>，游標跟按下去
      的回饋都改成「不是按鈕」的樣子，避免使用者以為點了會有動作 */
@@ -2764,8 +2771,10 @@ function renderSummary(){
           var rNote = String(recountR.note || "").trim();
           var noteBtnHtml = '<button class="mini-btn'+(rNote?' marked':'')+'" data-action="open-recount-note-modal" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">'+(rNote?'✎有備註':'✎備註')+'</button>';
           // 按鈕文字盡量短：欄寬是由這欄最寬的子元素撐出來的，文字越短欄位越窄，橫向捲動距離越少
-          // 已確認（回寫完成，最終狀態）用綠色，跟全站「已確認」的配色一致；已標記但還沒確認（中繼狀態）
-          // 改用琥珀色，呼應「複盤處理中」徽章的顏色——兩顆按鈕顏色差夠多，不會誤按。
+          // 第一輪回寫完顯示「已複盤」（不是「已確認」——避免被誤讀成整個流程已經結束，其實只是
+          // 完成了複盤這一步，還要 key in 重登 ERP 確認數字才算真的收尾），配色維持綠色不變；
+          // 已標記但還沒確認（中繼狀態）改用琥珀色，呼應「複盤處理中」徽章的顏色——兩顆按鈕顏色差
+          // 夠多，不會誤按。
           // 已定案(第二輪或之後的確認)改成不可點的 <span>，不是 <button>，避免被誤觸開出不存在的第三輪入口；
           // 判定用後端的 everReopened 旗標(一旦開過下一輪就永久是 true)，不用數值比對猜，避免複盤結果
           // 剛好跟原數字一樣時誤判成「還是第一輪」。
@@ -2773,7 +2782,7 @@ function renderSummary(){
           if(recountR.confirmed && recountR.everReopened){
             markToggleBtnHtml = '<span class="mini-btn locked-final" title="第二輪(或之後)確認回寫的最終定案，不能再開下一輪">已定案</span>';
           } else if(recountR.confirmed){
-            markToggleBtnHtml = '<button class="mini-btn marked" data-action="remark-recount-next-round" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已確認</button>';
+            markToggleBtnHtml = '<button class="mini-btn marked" data-action="remark-recount-next-round" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已複盤</button>';
           } else {
             markToggleBtnHtml = '<button class="mini-btn pending-mark" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已標記</button>';
           }
@@ -2848,7 +2857,7 @@ function renderSummary(){
             '</div>'+
             '<div class="hdr-right">'+
               styleConfirmStatusHtml+
-              '<button class="mini-btn'+(styleClaimed?' claimed':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(st.style)+'">'+(styleClaimed?'✓ 已認領':'未認領')+'</button>'+
+              '<button class="mini-btn'+(styleClaimed?' claimed':' unclaimed')+'" data-action="toggle-claim" data-style="'+escapeHtml(st.style)+'">'+(styleClaimed?'✓ 已認領':'未認領')+'</button>'+
               styleVerifyBtnHtml+
               '<div class="sg-arrow">›</div>'+
             '</div>'+
@@ -2869,7 +2878,7 @@ function renderSummary(){
     // 沒有品牌分組的獨立款式：這一層 brand-group 其實就代表單一型號，所以認領按鈕跟登錄狀態放在這裡；
     // 有品牌分組的話，這兩個都已經放在上面每個型號各自的 style-group-header 裡，這裡不重複放
     var groupClaimBtnHtml = g.brand === null
-      ? (function(){ var c = !!state.claims[groupName]; return '<button class="mini-btn'+(c?' claimed':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(groupName)+'">'+(c?'✓ 已認領':'未認領')+'</button>'; })()
+      ? (function(){ var c = !!state.claims[groupName]; return '<button class="mini-btn'+(c?' claimed':' unclaimed')+'" data-action="toggle-claim" data-style="'+escapeHtml(groupName)+'">'+(c?'✓ 已認領':'未認領')+'</button>'; })()
       : '';
     var groupConfirmStatusHtml = g.brand === null ? buildConfirmStatusBadgeHtml(groupName) : '';
     var groupVerifyBtnHtml = g.brand === null ? buildVerifyBtnHtml(groupName) : '';
@@ -4323,17 +4332,12 @@ function bindEvents(){
       }
 
       else if(action === 'remark-recount-next-round'){
-        // 彙總明細的「已確認」按鈕：不是取消，是開啟第二輪——上一輪的確認紀錄會保留，
+        // 彙總明細的「已複盤」按鈕：不是取消，是開啟第二輪——上一輪的確認紀錄會保留，
         // 真的要整筆刪掉已確認紀錄的例外情況，改到複盤頁給主管處理（unmark-recount-confirm）
         var rmStyle = el.getAttribute('data-style');
         var rmColor = el.getAttribute('data-color');
         var rmSize = el.getAttribute('data-size');
-        var rmKey = keyFor(rmStyle, rmColor, rmSize);
-        var rmR = state.recounts[rmKey] || {};
-        var rmConfirmedText = (rmR.confirmedBy || rmR.confirmedAt)
-          ? '（'+(rmR.confirmedBy ? escapeHtml(rmR.confirmedBy) : '')+(rmR.confirmedAt ? (rmR.confirmedBy?'，':'')+formatConfirmedAt(rmR.confirmedAt) : '')+'）'
-          : '';
-        if(!confirm('「'+rmStyle+' · '+rmColor+' · '+rmSize+'」上一輪已確認回寫'+rmConfirmedText+'。要開始新一輪複盤嗎？\n\n這格會變成待複盤狀態，上一輪的確認紀錄會保留。')){
+        if(!confirm('此格已複盤。若 ERP 重登後數字仍不符，將開啟第二輪複盤並自動交由品項負責人處理，確認？')){
           return;
         }
         await remarkRecountForNextRoundRemote(rmStyle, rmColor, rmSize);
