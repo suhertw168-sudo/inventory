@@ -416,6 +416,7 @@
   .confirm-status-badge.pending{ background:#fdf0e4; color:#c45a1e; }
   .confirm-status-badge.relog{ background:#f0e9fb; color:#6a3fa0; cursor:pointer; }
   .confirm-status-badge.relog:active{ background:#e2d4f5; }
+  .confirm-status-badge.done{ background:#e8f5ec; color:#2f7a3e; }
   /* 複盤清單項目 */
   .recount-item{
     border:1px solid var(--line); border-radius:12px;
@@ -448,10 +449,21 @@
   /* 主管視角下這裡會同時擠進指派徽章、第二輪標籤、狀態小標籤、取消複盤按鈕，容易比一般成員視角寬很多，
      這裡讓 hdr-right 自己允許換行、靠右對齊，避免整排被撐開而讓按鈕或文字超出卡片邊框 */
   .recount-item .hdr-right{ flex-wrap:wrap; justify-content:flex-end; row-gap:6px; }
-  .recount-item .ri-nums{
-    display:flex; align-items:flex-end; gap:10px;
+  /* 上面四個徽章／按鈕原本是 white-space:nowrap + 不可縮小，多語系名字一長、或手機螢幕一窄，
+     單一元素自己就比卡片寬，光靠 hdr-right 換行救不了——這裡讓它們允許自己內部換行＋可縮小，
+     文字短的時候外觀完全不變(還是一行)，只有真的太長才會在自己的圓角框內換行，不會撐出邊框 */
+  .recount-item .hdr-right .ri-assignee,
+  .recount-item .hdr-right .ri-assign-badge,
+  .recount-item .hdr-right .ri-second-round-tag,
+  .recount-item .hdr-right .mini-btn{
+    white-space:normal; flex:0 1 auto; max-width:100%; overflow-wrap:break-word; text-align:center;
   }
-  .recount-item .ri-num{ flex:1; text-align:center; }
+  .recount-item .ri-nums{
+    display:flex; flex-wrap:wrap; align-items:flex-end; gap:10px; row-gap:12px;
+  }
+  /* 第二輪進行中會多插一塊「初盤」，變成 4 塊數字＋3 個箭頭，窄螢幕放不下一整排時
+     靠 .ri-nums 的 flex-wrap 換成兩排，這裡給每塊一個最小寬度，換行後排版才不會擠壓變形 */
+  .recount-item .ri-num{ flex:1 1 70px; min-width:70px; text-align:center; }
   .recount-item .ri-num-label{ font-size:11px; color:var(--muted); font-weight:700; margin-bottom:4px; }
   .recount-item .ri-num-val{ font-size:20px; font-weight:800; }
   .recount-item .ri-num-sub{ font-size:11px; color:var(--muted); font-weight:600; margin-top:2px; }
@@ -999,7 +1011,9 @@ function computeRecountBadge(r, isDoneNow){
   var assignee = String(r.assignee || "").trim();
   var editingBy = String(r.editingBy || "").trim();
   var editingAt = r.editingAt ? new Date(r.editingAt).getTime() : 0;
-  var isEditingFresh = !!editingBy && (Date.now() - editingAt) < RECOUNT_EDITING_TTL_MS;
+  // 第二輪格子不顯示「複盤中」提醒：後端開第二輪時已經會清 I/J 欄，這裡是前端雙保險，
+  // 避免舊資料還沒同步完的空窗期誤顯示上一輪殘留的「⏳ OO 複盤中」
+  var isEditingFresh = !!editingBy && (Date.now() - editingAt) < RECOUNT_EDITING_TTL_MS && !isSecondRoundRecount(r);
   var myName = getRecountUserName();
 
   if(isDoneNow && assignee){
@@ -1395,7 +1409,7 @@ function normalizeCounts(counts){
 // 複盤任務的文字欄位一律強制轉成字串型別，避免 Google Sheet 把某格內容存成 number
 // （例如身分名字剛好打成純數字）時，前端對這些欄位做 .trim()/.toLowerCase() 直接炸掉整頁。
 // 數字格位（架上複盤/庫存複盤）維持原樣，使用處本來就會另外用 String()/parseExpr 處理。
-var RECOUNT_TEXT_FIELDS = ["note","assignee","editingBy","lastEditBy","confirmedBy","relogBy","beforeCountedBy"];
+var RECOUNT_TEXT_FIELDS = ["note","assignee","editingBy","lastEditBy","confirmedBy","relogBy","beforeCountedBy","veryFirstCountedBy"];
 function normalizeRecounts(recounts){
   if(!recounts || typeof recounts !== 'object') return recounts || {};
   var out = {};
@@ -1619,11 +1633,18 @@ function startAutoSync(){
   }
 }
 
+// 記錄「目前正在跑」的那次同步的 promise：如果呼叫的當下已經有一次在跑(例如背景每 30 秒的自動同步
+// 剛好撞上使用者手動點「更新」)，不能無聲跳過什麼都不做——之前複盤頁「🔄 更新」點了沒反應、要退回
+// 首頁重進才看得到新指派任務，就是這裡：舊寫法撞上就直接 return，外層的 render() 只能拿舊 state 重畫。
+// 改成回傳同一個 in-flight promise，讓所有呼叫端(不管是背景 tick 還是手動點按鈕)都保證等到一次真正
+// 跑完、資料真的抓回來merge 進 state 之後才繼續，不會再有「按了沒用」的情況。
+var syncFromBackendPromise = null;
 async function syncFromBackend(){
-  if(isSyncing) return; // 上次還沒跑完就跳過這次
+  if(syncFromBackendPromise) return syncFromBackendPromise;
   // 在「管理用設定」畫面時完全不同步，避免背景資料覆蓋正在進行的品牌/結構編輯
   if(state.view === "setup") return;
   isSyncing = true;
+  syncFromBackendPromise = (async function(){
   try{
     var all = await apiGet("all");
     if(!all || !Array.isArray(all.structure)) return;
@@ -1729,7 +1750,10 @@ async function syncFromBackend(){
     // 同步失敗就靜默略過，下一輪會再試
   }finally{
     isSyncing = false;
+    syncFromBackendPromise = null;
   }
+  })();
+  return syncFromBackendPromise;
 }
 
 // 讀取失敗時顯示這個畫面，絕對不會自動清空或覆蓋任何已存在 Google Sheet 裡的款式設定
@@ -2833,6 +2857,19 @@ function isSecondRoundRecount(r){
   return !!r && !r.confirmed && hasRecountSnapshot(r);
 }
 
+// 「初盤」該讀哪一組快照：優先用首輪原始快照(veryFirst，有史以來第一次確認的值，之後不管開第幾輪、
+// 確認幾次都不會被覆蓋)，沒有(這次改動之前就已經確認過的舊格子)才退回 before 值(Q/R/S，這一輪確認前
+// 的即時值)相容——只經過一輪的格子兩者本來就是同一個值，只有進到第三輪以上才可能有落差。
+// 已確認卡片的「第一次（原）」、第二輪卡片新增的「初盤」欄位都共用這個函式，確保同一套「原始值」概念
+// 全站一致，不會不同畫面各算各的。
+function resolveVeryFirstSnapshot(r){
+  var hasVeryFirst = r.veryFirstShelf !== "" && r.veryFirstShelf !== null && r.veryFirstShelf !== undefined;
+  if(hasVeryFirst){
+    return { shelf: r.veryFirstShelf, stock: r.veryFirstStock, countedBy: r.veryFirstCountedBy };
+  }
+  return { shelf: r.beforeShelf, stock: r.beforeStock, countedBy: r.beforeCountedBy };
+}
+
 // 取得某個複盤 key（"款式|顏色|尺寸"）所屬的品牌名稱(沒品牌回傳空字串)
 // 跟 renderRecount() 內部的 brandOfKey 是同一套邏輯，這裡另外開一個全域版本給就地更新用
 function brandOfRecountKey(key){
@@ -2882,7 +2919,7 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   // 這裡另外複製一份是因為背景同步的就地更新完全不會經過 buildRecountItem()，兩邊都要改才不會
   // 在下一輪同步時被這裡的舊邏輯把已經修好的「第一次」畫面蓋回去。
   var hasSnapshot = !!r.confirmed && hasRecountSnapshot(r);
-  var firstSource = hasSnapshot ? { shelf: r.beforeShelf, stock: r.beforeStock, countedBy: r.beforeCountedBy } : c;
+  var firstSource = hasSnapshot ? resolveVeryFirstSnapshot(r) : c;
   var firstShelf = firstSource && firstSource.shelf !== "" && firstSource.shelf !== null && firstSource.shelf !== undefined ? (Number(firstSource.shelf)||0) : null;
   var firstStock = firstSource && firstSource.stock !== "" && firstSource.stock !== null && firstSource.stock !== undefined ? (Number(firstSource.stock)||0) : null;
   var firstTotal = (firstShelf !== null || firstStock !== null) ? ((firstShelf||0)+(firstStock||0)) : null;
@@ -2954,9 +2991,41 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
       subEl.remove();
     }
   }
+  // 第一次/上一輪複盤/複盤加總 這三塊要不要顯示「架上X／庫存Y」細項，第二輪進行中(secondRoundNow)
+  // 跟已確認且有快照(hasSnapshot)是同一批需要細項的狀態，統一用 showBreakdown 判斷，
+  // 跟 buildRecountItem() 是同一套邏輯，避免各寫一份漏掉。
+  var showBreakdown = hasSnapshot || secondRoundNow;
   var firstLabelEl = firstValEl ? firstValEl.closest('.ri-num').querySelector('.ri-num-label') : null;
-  if(firstLabelEl) firstLabelEl.textContent = hasSnapshot ? '第一次（原）' : '第一次';
-  syncNumSub(firstValEl, hasSnapshot ? ('架上'+(firstShelf!==null?firstShelf:'—')+'／庫存'+(firstStock!==null?firstStock:'—')) : '');
+  if(firstLabelEl) firstLabelEl.textContent = secondRoundNow ? '上一輪複盤' : (hasSnapshot ? '第一次（原）' : '第一次');
+  syncNumSub(firstValEl, showBreakdown ? ('架上'+(firstShelf!==null?firstShelf:'—')+'／庫存'+(firstStock!==null?firstStock:'—')) : '');
+
+  // 就地補上/移除「初盤」這一塊(只在第二輪進行中才出現)：插在「上一輪複盤」前面，帶一個箭頭，
+  // 用 resolveVeryFirstSnapshot() 讀首輪原始快照，跟 buildRecountItem() 是同一套邏輯
+  var numsEl = firstValEl ? firstValEl.closest('.ri-nums') : itemEl.querySelector('.ri-nums');
+  var firstNumEl = firstValEl ? firstValEl.closest('.ri-num') : null;
+  var veryFirstNumEl = numsEl ? numsEl.querySelector('.ri-veryfirst-num') : null;
+  var veryFirstArrowEl = numsEl ? numsEl.querySelector('.ri-veryfirst-arrow') : null;
+  if(secondRoundNow && numsEl && firstNumEl){
+    var vf = resolveVeryFirstSnapshot(r);
+    var vfShelf = vf.shelf !== "" && vf.shelf !== null && vf.shelf !== undefined ? (Number(vf.shelf)||0) : null;
+    var vfStock = vf.stock !== "" && vf.stock !== null && vf.stock !== undefined ? (Number(vf.stock)||0) : null;
+    var vfTotal = (vfShelf !== null || vfStock !== null) ? ((vfShelf||0)+(vfStock||0)) : null;
+    if(!veryFirstNumEl){
+      veryFirstNumEl = document.createElement('div');
+      veryFirstNumEl.className = 'ri-num ri-veryfirst-num';
+      veryFirstNumEl.innerHTML = '<div class="ri-num-label">初盤</div><div class="ri-num-val"></div><div class="ri-num-sub"></div>';
+      veryFirstArrowEl = document.createElement('div');
+      veryFirstArrowEl.className = 'ri-arrow ri-veryfirst-arrow';
+      veryFirstArrowEl.textContent = '→';
+      numsEl.insertBefore(veryFirstArrowEl, firstNumEl);
+      numsEl.insertBefore(veryFirstNumEl, veryFirstArrowEl);
+    }
+    veryFirstNumEl.querySelector('.ri-num-val').textContent = (vfTotal !== null ? vfTotal : '—');
+    veryFirstNumEl.querySelector('.ri-num-sub').textContent = '架上'+(vfShelf!==null?vfShelf:'—')+'／庫存'+(vfStock!==null?vfStock:'—');
+  } else {
+    if(veryFirstNumEl) veryFirstNumEl.remove();
+    if(veryFirstArrowEl) veryFirstArrowEl.remove();
+  }
 
   var diffHtml = "";
   if(firstTotal !== null && recountVal !== null){
@@ -2971,7 +3040,7 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   itemEl.classList.toggle('done', isDoneNow);
   var totalEl = itemEl.querySelector('.ri-total-val');
   if(totalEl) totalEl.textContent = (recountVal !== null ? recountVal : '—');
-  syncNumSub(totalEl, hasSnapshot ? ('架上'+(recountShelfValPatch!==null?recountShelfValPatch:'—')+'／庫存'+(recountStockValPatch!==null?recountStockValPatch:'—')) : '');
+  syncNumSub(totalEl, showBreakdown ? ('架上'+(recountShelfValPatch!==null?recountShelfValPatch:'—')+'／庫存'+(recountStockValPatch!==null?recountStockValPatch:'—')) : '');
   var diffEl = itemEl.querySelector('.ri-diff-val');
   if(diffEl) diffEl.innerHTML = diffHtml;
 
@@ -3181,16 +3250,19 @@ function renderRecountProgressOverview(){
 
 // ---------- 型號登錄狀態判定（給彙總明細頁看，判斷這個型號要不要提醒 key in 人員處理） ----------
 // 實際流程是「key in 登 ERP → 差距大才標記複盤 → 複盤確認回寫 → 通知 key in 重登」，複盤是登錄後的
-// 例外處理，不是登錄前的門檻，所以這裡刻意分成三態，「沒有複盤任務」跟「複盤任務都處理完了」是兩種不同狀態：
-//   "none"       - 這個型號沒有任何複盤任務：正常，初登完就結束，不用顯示徽章
+// 例外處理，不是登錄前的門檻，所以這裡刻意分成四態：
+//   "none"       - 這個型號沒有任何複盤任務、也還沒認領(還沒登 ERP)：正常，不用顯示徽章
 //   "pending"    - 有複盤任務還沒確認回寫：「⚠ 複盤處理中」，附上還差幾格
 //   "needsRelog" - 複盤任務全部確認回寫完畢，但還有格子沒標記重登：「🔔 可重新登錄」，通知 key in 重登 ERP
-//   (全部確認且全部重登 = 沒有徽章，等於 key in 已經處理完這一輪)
+//   "done"       - 最終態「✅ 已完成」，兩種情況都算：
+//                  (a) 有複盤任務，且全部確認回寫、全部重登(key in 點掉最後一個「可重新登錄」的那一刻起)
+//                  (b) 沒有任何複盤任務，但已認領(=已登錄 ERP，不需要複盤，登完就結束)
 // 跟複盤頁的 visibleRecountKeys() 是不同用途：彙總頁是給任何要登 ERP 的人看整體狀態，
 // 所以這裡故意讀「全部」複盤任務（不套用複盤頁「指派給自己才看得到」的過濾）。
 // confirmed/relogged 都是「格子等級」的旗標（見後端 Code.gs 的說明），不是型號等級的單一狀態——
 // 這樣「取消複盤=整列刪除」「重新標記複盤=全新一列」這兩個既有機制，就能讓下一輪複盤時徽章自然重新出現，
-// 不需要額外寫「重置」邏輯。
+// 「已完成」也會自動退回「⚠ 處理中」，不需要額外寫「重置」邏輯：開新一輪時該格 confirmed 會被重設成
+// false，下次算這裡就自然變回 pending。
 function computeStyleConfirmStatus(styleName){
   var pending = 0;
   var hasAny = false;
@@ -3202,13 +3274,13 @@ function computeStyleConfirmStatus(styleName){
     if(!r.confirmed){ pending++; }
     else if(!r.relogged){ needsRelog = true; }
   });
-  if(!hasAny) return { status:"none" };
+  if(!hasAny) return { status: state.claims[styleName] ? "done" : "none" };
   if(pending > 0) return { status:"pending", pending:pending };
   if(needsRelog) return { status:"needsRelog" };
   return { status:"done" };
 }
 
-// 把型號登錄狀態組成徽章 HTML，"none"/"done" 都不顯示徽章（正常狀態，不用打擾 key in 人員）。
+// 把型號登錄狀態組成徽章 HTML，"none" 不顯示徽章（還沒登錄，不用打擾 key in 人員）。
 // "needsRelog" 是一顆可點擊的按鈕，點了問過確認才會標記重登、消掉這顆徽章。
 function buildConfirmStatusBadgeHtml(styleName){
   var cs = computeStyleConfirmStatus(styleName);
@@ -3217,6 +3289,9 @@ function buildConfirmStatusBadgeHtml(styleName){
   }
   if(cs.status === "needsRelog"){
     return '<button type="button" class="confirm-status-badge relog" data-action="relog-style-confirm" data-style="'+escapeHtml(styleName)+'">🔔 可重新登錄</button>';
+  }
+  if(cs.status === "done"){
+    return '<span class="confirm-status-badge done">✅ 已完成</span>';
   }
   return "";
 }
@@ -3331,7 +3406,9 @@ function renderRecount(){
     // counts 馬上就會變成複盤值本身，「第一次」如果還讀 counts 就會變成初盤=複盤、差異歸零，
     // 稽核意義消失。沒有快照（這次改動之前就確認過的舊格子）或還沒確認，維持現行讀法，不報錯、不擋畫面。
     var hasSnapshot = !!r.confirmed && hasRecountSnapshot(r);
-    var firstSource = hasSnapshot ? { shelf: r.beforeShelf, stock: r.beforeStock, countedBy: r.beforeCountedBy } : c;
+    // 已確認且有快照：優先讀首輪原始快照(永遠不變的初盤原值)，沒有才退回 before 值(這一輪確認前的
+    // 即時值，只經過一輪的格子兩者本來就相同，只有進第三輪以上才會有落差)——見 resolveVeryFirstSnapshot。
+    var firstSource = hasSnapshot ? resolveVeryFirstSnapshot(r) : c;
     var firstShelf = firstSource && firstSource.shelf !== "" && firstSource.shelf !== null && firstSource.shelf !== undefined ? (Number(firstSource.shelf)||0) : null;
     var firstStock = firstSource && firstSource.stock !== "" && firstSource.stock !== null && firstSource.stock !== undefined ? (Number(firstSource.stock)||0) : null;
     var firstTotal = (firstShelf !== null || firstStock !== null) ? ((firstShelf||0)+(firstStock||0)) : null;
@@ -3396,6 +3473,24 @@ function renderRecount(){
       (keyOwners.length > 0 ? '限負責人：'+escapeHtml(keyOwners.join('、'))+' 可填寫' : '限品牌負責人可填寫（尚未設定負責人）')+
       '</div>';
 
+    // 第二輪進行中：多顯示一塊「初盤」——讀首輪原始快照(veryFirst，有史以來第一次確認的值，
+    // 之後不管開幾輪都不會被覆蓋)，沒有就退回 before 值相容舊資料。緊接著的「上一輪複盤」沿用
+    // firstTotal 現有算法(=目前的 counts 現值，在下一輪確認前正好等於上一輪定案值)，不用改。
+    var veryFirstNumHtml = "";
+    if(secondRoundNow){
+      var vf = resolveVeryFirstSnapshot(r);
+      var vfShelf = vf.shelf !== "" && vf.shelf !== null && vf.shelf !== undefined ? (Number(vf.shelf)||0) : null;
+      var vfStock = vf.stock !== "" && vf.stock !== null && vf.stock !== undefined ? (Number(vf.stock)||0) : null;
+      var vfTotal = (vfShelf !== null || vfStock !== null) ? ((vfShelf||0)+(vfStock||0)) : null;
+      veryFirstNumHtml = '<div class="ri-num"><div class="ri-num-label">初盤</div><div class="ri-num-val">'+(vfTotal!==null?vfTotal:'—')+'</div>'+
+          '<div class="ri-num-sub">架上'+(vfShelf!==null?vfShelf:'—')+'／庫存'+(vfStock!==null?vfStock:'—')+'</div>'+
+        '</div>'+
+        '<div class="ri-arrow">→</div>';
+    }
+    // 第一次/上一輪複盤/複盤加總 這三塊要不要顯示「架上X／庫存Y」細項，第二輪進行中(secondRoundNow)
+    // 跟已確認且有快照(hasSnapshot)是同一批需要細項的狀態，統一用 showBreakdown 判斷，避免各寫各的漏掉。
+    var showBreakdown = hasSnapshot || secondRoundNow;
+
     return '<div class="recount-item'+(recountVal!==null?' done':'')+'" data-key="'+escapeHtml(k)+'">'+
       '<div class="ri-top">'+
         '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+
@@ -3409,12 +3504,13 @@ function renderRecount(){
         '</div>'+
       '</div>'+
       '<div class="ri-nums">'+
-        '<div class="ri-num"><div class="ri-num-label">'+(hasSnapshot?'第一次（原）':'第一次')+'</div><div class="ri-num-val ri-first-val">'+(firstTotal!==null?firstTotal:'—')+'</div>'+
-          (hasSnapshot ? '<div class="ri-num-sub">架上'+(firstShelf!==null?firstShelf:'—')+'／庫存'+(firstStock!==null?firstStock:'—')+'</div>' : '')+
+        veryFirstNumHtml+
+        '<div class="ri-num"><div class="ri-num-label">'+(secondRoundNow?'上一輪複盤':(hasSnapshot?'第一次（原）':'第一次'))+'</div><div class="ri-num-val ri-first-val">'+(firstTotal!==null?firstTotal:'—')+'</div>'+
+          (showBreakdown ? '<div class="ri-num-sub">架上'+(firstShelf!==null?firstShelf:'—')+'／庫存'+(firstStock!==null?firstStock:'—')+'</div>' : '')+
         '</div>'+
         '<div class="ri-arrow">→</div>'+
         '<div class="ri-num"><div class="ri-num-label">複盤加總</div><div class="ri-num-val ri-total-val">'+(recountVal!==null?recountVal:'—')+'</div>'+
-          (hasSnapshot ? '<div class="ri-num-sub">架上'+(recountShelfVal!==null?recountShelfVal:'—')+'／庫存'+(recountStockVal!==null?recountStockVal:'—')+'</div>' : '')+
+          (showBreakdown ? '<div class="ri-num-sub">架上'+(recountShelfVal!==null?recountShelfVal:'—')+'／庫存'+(recountStockVal!==null?recountStockVal:'—')+'</div>' : '')+
         '</div>'+
         '<div class="ri-arrow">=</div>'+
         '<div class="ri-num"><div class="ri-num-label">差異</div><div class="ri-num-val ri-diff-val">'+diffHtml+'</div></div>'+
