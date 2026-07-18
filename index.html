@@ -404,6 +404,10 @@
   .mini-btn.marked{
     border-color:#2f7a3e; background:#e8f5ec; color:#2f7a3e;
   }
+  /* 第二輪(或之後)確認回寫的最終定案：跟可點開下一輪的「已確認」用同一個綠色基底，但改成不可點的
+     <span>，游標跟按下去的回饋都改成「不是按鈕」的樣子，避免使用者以為點了會有動作 */
+  .mini-btn.locked-final{ cursor:default; }
+  .mini-btn.locked-final:active{ background:#e8f5ec; color:#2f7a3e; }
   /* 已標記但尚未確認回寫的中繼狀態，跟「已確認」的綠色拉開區隔，避免兩顆按鈕看起來一樣 */
   .mini-btn.pending-mark{
     border-color:#c45a1e; background:#fdf0e4; color:#c45a1e;
@@ -1650,6 +1654,11 @@ async function syncFromBackend(){
     if(!all || !Array.isArray(all.structure)) return;
     if(all.brandOrder && all.brandOrder.length){ BRAND_ORDER = all.brandOrder.map(String); }
     var prevRecounts = state.recounts; // 存複盤頁就地更新用：跟同步前的舊資料比對哪些格子完成狀態有變
+    // 存首頁「有沒有變動」判斷用：主管指派新任務、或有人標記/確認複盤，都只會改到這兩份資料，
+    // 不會動到 counts/structure，舊寫法完全沒比對這兩個，導致首頁「複盤任務」徽章不會自動更新
+    // （見 manual-sync 呼叫端的說明）。資料量小，直接比 JSON 字串，不用另外寫一套深層 diff。
+    var prevRecountsJSON = JSON.stringify(state.recounts);
+    var prevAssignmentsJSON = JSON.stringify(state.assignments);
     if(all.recounts){ state.recounts = normalizeRecounts(all.recounts); }
     if(all.claims){ state.claims = all.claims; }
     if(Array.isArray(all.people)){ state.people = all.people.map(String); }
@@ -1661,6 +1670,8 @@ async function syncFromBackend(){
     var newStructure = normalizeStructure(all.structure);
     var newCountsRaw = normalizeCounts(all.counts || {});
     var hasChange = false;
+    if(JSON.stringify(state.recounts) !== prevRecountsJSON) hasChange = true;
+    if(JSON.stringify(state.assignments) !== prevAssignmentsJSON) hasChange = true;
     // 比 counts：先比 key 數量，再逐個比 total
     var oldKeys = Object.keys(state.counts);
     var newKeys = Object.keys(newCountsRaw);
@@ -2650,7 +2661,8 @@ function renderSummary(){
           ? '<td class="num">'+stock+'</td>'
           : '<td class="num" style="color:#e87a3e; font-weight:700;">未填</td>';
         // 複盤標記欄：要不要複盤是 key in 人員依 ERP 比對在這裡決定的，所以標記/取消/再標記都在這裡做。
-        // 三種狀態：未標記(標記)／已標記未確認(已標記，點了取消)／已確認(已確認，點了開啟第二輪)。
+        // 四種狀態：未標記(標記)／已標記未確認(已標記，點了取消)／已確認(第一輪確認，點了開啟第二輪)／
+        // 已定案(第二輪或之後確認過，不能再點開下一輪——複盤頁主管仍保留例外處理的「取消複盤」後路)。
         // 已確認的格子不再能從這裡整筆刪除——真的要刪掉已確認紀錄的例外情況，改到複盤頁給主管處理。
         var recountR = state.recounts[key];
         var isMarked = !!recountR;
@@ -2663,10 +2675,18 @@ function renderSummary(){
           var noteBtnHtml = '<button class="mini-btn'+(rNote?' marked':'')+'" data-action="open-recount-note-modal" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">'+(rNote?'✎有備註':'✎備註')+'</button>';
           // 按鈕文字盡量短：欄寬是由這欄最寬的子元素撐出來的，文字越短欄位越窄，橫向捲動距離越少
           // 已確認（回寫完成，最終狀態）用綠色，跟全站「已確認」的配色一致；已標記但還沒確認（中繼狀態）
-          // 改用琥珀色，呼應「複盤處理中」徽章的顏色——兩顆按鈕顏色差夠多，不會誤按
-          var markToggleBtnHtml = recountR.confirmed
-            ? '<button class="mini-btn marked" data-action="remark-recount-next-round" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已確認</button>'
-            : '<button class="mini-btn pending-mark" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已標記</button>';
+          // 改用琥珀色，呼應「複盤處理中」徽章的顏色——兩顆按鈕顏色差夠多，不會誤按。
+          // 已定案(第二輪或之後的確認)改成不可點的 <span>，不是 <button>，避免被誤觸開出不存在的第三輪入口；
+          // 判定用後端的 everReopened 旗標(一旦開過下一輪就永久是 true)，不用數值比對猜，避免複盤結果
+          // 剛好跟原數字一樣時誤判成「還是第一輪」。
+          var markToggleBtnHtml;
+          if(recountR.confirmed && recountR.everReopened){
+            markToggleBtnHtml = '<span class="mini-btn marked locked-final" title="第二輪(或之後)確認回寫的最終定案，不能再開下一輪">已定案</span>';
+          } else if(recountR.confirmed){
+            markToggleBtnHtml = '<button class="mini-btn marked" data-action="remark-recount-next-round" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已確認</button>';
+          } else {
+            markToggleBtnHtml = '<button class="mini-btn pending-mark" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已標記</button>';
+          }
           recountCell = '<td class="num" style="white-space:nowrap;">'+
             '<div style="display:flex; flex-direction:column; gap:4px; align-items:flex-end;">'+
               markToggleBtnHtml+
@@ -2764,13 +2784,29 @@ function renderSummary(){
       ? (function(){ var c = !!state.claims[groupName]; return '<button class="mini-btn'+(c?' marked':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(groupName)+'">'+(c?'✓ 已認領':'未認領')+'</button>'; })()
       : '';
     var groupConfirmStatusHtml = g.brand === null ? buildConfirmStatusBadgeHtml(groupName) : '';
-    // 品牌層「已完成」標籤：只有真的有品牌分組(底下不只一個型號)才顯示，判定沿用 computeClaimBrandProgress
-    // (跟原本認領總覽頁用的同一套邏輯)——品牌底下所有型號都認領了才算完成
+    // 品牌層(未展開就看得到的最外層)狀態標籤：判定沿用 computeClaimBrandProgress(認領進度)跟
+    // computeStyleConfirmStatus(複盤進度，每個型號都查一次)，兩個訊號獨立算，再用優先序組字：
+    //   1. 品牌底下任一型號還有未解決的複盤(⚠處理中或🔔可重新登錄) → 一定顯示「⚠ 複盤處理中」
+    //      (不管認領完了沒，這是最需要主管注意的訊號，優先權最高，避免誤以為認領完=複盤也結束了)；
+    //      這時如果剛好也全部認領了，額外加顯示「✓ 全部認領」，讓主管知道 ERP 端已經沒事，
+    //      卡住的只有複盤。
+    //   2. 沒有未解決的複盤，且全部認領 → 兩件事都做完了，顯示「✅ 已完成」(取代「全部認領」)。
+    //   3. 其餘(還沒全部認領、複盤也沒問題) → 維持不顯示標籤。
     var brandClaimProgress = g.brand !== null ? claimProgressByBrand[g.brand] : null;
     var brandAllClaimed = !!(brandClaimProgress && brandClaimProgress.totalCount > 0 && brandClaimProgress.doneCount === brandClaimProgress.totalCount);
-    var brandClaimTag = brandAllClaimed
-      ? ' <span style="background:#2f7a3e; color:#fff; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">✅ 已完成</span>'
-      : '';
+    var brandHasUnresolvedRecount = g.brand !== null && groupStyles.some(function(st){
+      var s = computeStyleConfirmStatus(st.style).status;
+      return s === "pending" || s === "needsRelog";
+    });
+    var brandClaimTag = "";
+    if(brandHasUnresolvedRecount){
+      if(brandAllClaimed){
+        brandClaimTag += ' <span style="background:#f0e9fb; color:#6a3fa0; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">✓ 全部認領</span>';
+      }
+      brandClaimTag += ' <span style="background:#fdf0e4; color:#c45a1e; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">⚠ 複盤處理中</span>';
+    } else if(brandAllClaimed){
+      brandClaimTag = ' <span style="background:#2f7a3e; color:#fff; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">✅ 已完成</span>';
+    }
     groupsHtml += '<div class="brand-group'+(groupMissing > 0 ? ' has-missing' : '')+'" data-brand-name="'+escapeHtml(groupName)+'">'+
       '<div class="brand-group-header" data-action="toggle-brand-group">'+
         '<div class="bg-left">'+
@@ -2996,10 +3032,10 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   // 跟 buildRecountItem() 是同一套邏輯，避免各寫一份漏掉。
   var showBreakdown = hasSnapshot || secondRoundNow;
   var firstLabelEl = firstValEl ? firstValEl.closest('.ri-num').querySelector('.ri-num-label') : null;
-  if(firstLabelEl) firstLabelEl.textContent = secondRoundNow ? '上一輪複盤' : (hasSnapshot ? '第一次（原）' : '第一次');
+  if(firstLabelEl) firstLabelEl.textContent = secondRoundNow ? '第一輪複盤' : (hasSnapshot ? '第一次（原）' : '第一次');
   syncNumSub(firstValEl, showBreakdown ? ('架上'+(firstShelf!==null?firstShelf:'—')+'／庫存'+(firstStock!==null?firstStock:'—')) : '');
 
-  // 就地補上/移除「初盤」這一塊(只在第二輪進行中才出現)：插在「上一輪複盤」前面，帶一個箭頭，
+  // 就地補上/移除「初盤」這一塊(只在第二輪進行中才出現)：插在「第一輪複盤」前面，帶一個箭頭，
   // 用 resolveVeryFirstSnapshot() 讀首輪原始快照，跟 buildRecountItem() 是同一套邏輯
   var numsEl = firstValEl ? firstValEl.closest('.ri-nums') : itemEl.querySelector('.ri-nums');
   var firstNumEl = firstValEl ? firstValEl.closest('.ri-num') : null;
@@ -3040,6 +3076,8 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   itemEl.classList.toggle('done', isDoneNow);
   var totalEl = itemEl.querySelector('.ri-total-val');
   if(totalEl) totalEl.textContent = (recountVal !== null ? recountVal : '—');
+  var totalLabelEl = totalEl ? totalEl.closest('.ri-num').querySelector('.ri-num-label') : null;
+  if(totalLabelEl) totalLabelEl.textContent = secondRoundNow ? '第二輪複盤加總' : '複盤加總';
   syncNumSub(totalEl, showBreakdown ? ('架上'+(recountShelfValPatch!==null?recountShelfValPatch:'—')+'／庫存'+(recountStockValPatch!==null?recountStockValPatch:'—')) : '');
   var diffEl = itemEl.querySelector('.ri-diff-val');
   if(diffEl) diffEl.innerHTML = diffHtml;
@@ -3482,10 +3520,13 @@ function renderRecount(){
       var vfShelf = vf.shelf !== "" && vf.shelf !== null && vf.shelf !== undefined ? (Number(vf.shelf)||0) : null;
       var vfStock = vf.stock !== "" && vf.stock !== null && vf.stock !== undefined ? (Number(vf.stock)||0) : null;
       var vfTotal = (vfShelf !== null || vfStock !== null) ? ((vfShelf||0)+(vfStock||0)) : null;
-      veryFirstNumHtml = '<div class="ri-num"><div class="ri-num-label">初盤</div><div class="ri-num-val">'+(vfTotal!==null?vfTotal:'—')+'</div>'+
+      // class 要跟 patchRecountItemDisplay() 就地更新時找的選擇器(.ri-veryfirst-num/.ri-veryfirst-arrow)
+      // 完全一致——少了這個標記，背景同步會找不到這裡已經畫出來的「初盤」區塊，誤判成沒畫過而重複插入
+      // 一份，變成「初盤、初盤、上一輪複盤、複盤加總」的重複 bug。
+      veryFirstNumHtml = '<div class="ri-num ri-veryfirst-num"><div class="ri-num-label">初盤</div><div class="ri-num-val">'+(vfTotal!==null?vfTotal:'—')+'</div>'+
           '<div class="ri-num-sub">架上'+(vfShelf!==null?vfShelf:'—')+'／庫存'+(vfStock!==null?vfStock:'—')+'</div>'+
         '</div>'+
-        '<div class="ri-arrow">→</div>';
+        '<div class="ri-arrow ri-veryfirst-arrow">→</div>';
     }
     // 第一次/上一輪複盤/複盤加總 這三塊要不要顯示「架上X／庫存Y」細項，第二輪進行中(secondRoundNow)
     // 跟已確認且有快照(hasSnapshot)是同一批需要細項的狀態，統一用 showBreakdown 判斷，避免各寫各的漏掉。
@@ -3505,11 +3546,11 @@ function renderRecount(){
       '</div>'+
       '<div class="ri-nums">'+
         veryFirstNumHtml+
-        '<div class="ri-num"><div class="ri-num-label">'+(secondRoundNow?'上一輪複盤':(hasSnapshot?'第一次（原）':'第一次'))+'</div><div class="ri-num-val ri-first-val">'+(firstTotal!==null?firstTotal:'—')+'</div>'+
+        '<div class="ri-num"><div class="ri-num-label">'+(secondRoundNow?'第一輪複盤':(hasSnapshot?'第一次（原）':'第一次'))+'</div><div class="ri-num-val ri-first-val">'+(firstTotal!==null?firstTotal:'—')+'</div>'+
           (showBreakdown ? '<div class="ri-num-sub">架上'+(firstShelf!==null?firstShelf:'—')+'／庫存'+(firstStock!==null?firstStock:'—')+'</div>' : '')+
         '</div>'+
         '<div class="ri-arrow">→</div>'+
-        '<div class="ri-num"><div class="ri-num-label">複盤加總</div><div class="ri-num-val ri-total-val">'+(recountVal!==null?recountVal:'—')+'</div>'+
+        '<div class="ri-num"><div class="ri-num-label">'+(secondRoundNow?'第二輪複盤加總':'複盤加總')+'</div><div class="ri-num-val ri-total-val">'+(recountVal!==null?recountVal:'—')+'</div>'+
           (showBreakdown ? '<div class="ri-num-sub">架上'+(recountShelfVal!==null?recountShelfVal:'—')+'／庫存'+(recountStockVal!==null?recountStockVal:'—')+'</div>' : '')+
         '</div>'+
         '<div class="ri-arrow">=</div>'+
@@ -3923,8 +3964,23 @@ function bindEvents(){
       else if(action === 'manual-sync'){
         var statusEl = document.getElementById('sync-status');
         if(statusEl) statusEl.textContent = "🔄 同步中...";
-        await syncFromBackend();
-        showToast("已更新");
+        // 按下瞬間先給視覺回饋：文字換成「更新中…」+ disabled 防連點。成功的話下面會整頁 render()，
+        // 按鈕本身會被換成全新節點，這裡的還原動作作用在已經丟棄的舊節點上、沒有副作用；
+        // 失敗的話 finally 負責把文字/狀態還原，不會卡死在「更新中…」。
+        var syncBtnText = el.textContent;
+        el.disabled = true;
+        el.textContent = "更新中…";
+        try{
+          await syncFromBackend();
+          // 首頁不能只靠 syncFromBackend() 內部的 hasChange 判斷要不要重畫——使用者主動點更新，
+          // 就該保證看到當下最新狀態，不能因為判斷「沒變化」就沒重畫，導致新指派的複盤任務
+          // 徽章沒有立刻出現(要退回首頁重進才看得到)。
+          render();
+          showToast("已更新");
+        } finally {
+          el.disabled = false;
+          el.textContent = syncBtnText;
+        }
       }
 
       else if(action === 'refresh-summary'){
@@ -4199,9 +4255,20 @@ function bindEvents(){
       }
 
       else if(action === 'manual-sync-recount'){
-        await syncFromBackend();
-        render();
-        showToast('已更新');
+        // 按下瞬間先給視覺回饋，理由同首頁「立即更新」：文字換成「更新中…」+ disabled 防連點，
+        // 成功會整頁 render() 把按鈕換成全新節點(這裡的還原對已丟棄的舊節點無副作用)，
+        // 失敗則靠 finally 把按鈕還原，不會卡住。
+        var syncBtnText = el.textContent;
+        el.disabled = true;
+        el.textContent = '更新中…';
+        try{
+          await syncFromBackend();
+          render();
+          showToast('已更新');
+        } finally {
+          el.disabled = false;
+          el.textContent = syncBtnText;
+        }
       }
       else if(action === 'refresh-recount-list'){
         // 使用者主動點了「清單有變動」提示才重畫：資料在背景同步當下就已經寫進 state.recounts，
