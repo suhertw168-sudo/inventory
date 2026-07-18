@@ -151,6 +151,10 @@
   /* 第二輪格子不再走指派，改用這個徽章顯示「已自動歸品牌負責人」；沒設定負責人時用 .no-owner 標紅 */
   .assign-badge-second-round{ background:#f0e9fb; color:#6a3fa0; }
   .assign-badge-second-round.no-owner{ background:#fdecea; color:#c0392b; }
+  /* 已確認/已定案的格子不能再被指派，跟彙總明細那顆按鈕(.mini-btn.marked/.locked-final)同一套配色，
+     全站對這兩個狀態的顏色保持一致：已確認=綠色，已定案=深灰(封存感) */
+  .assign-badge.confirmed{ background:#e8f5ec; color:#2f7a3e; }
+  .assign-badge.locked-final{ background:#e5e8eb; color:#434b56; }
   .assign-footer{
     position:sticky; bottom:0;
     padding:12px 18px;
@@ -404,10 +408,19 @@
   .mini-btn.marked{
     border-color:#2f7a3e; background:#e8f5ec; color:#2f7a3e;
   }
-  /* 第二輪(或之後)確認回寫的最終定案：跟可點開下一輪的「已確認」用同一個綠色基底，但改成不可點的
-     <span>，游標跟按下去的回饋都改成「不是按鈕」的樣子，避免使用者以為點了會有動作 */
-  .mini-btn.locked-final{ cursor:default; }
-  .mini-btn.locked-final:active{ background:#e8f5ec; color:#2f7a3e; }
+  /* 彙總明細「已認領」用獨立的藍色系，跟「已確認」的綠色(.marked)拉開區隔——這兩個是完全不同的
+     狀態(ERP登錄 vs 複盤回寫)，之前共用同一個綠色 class 容易混淆。顏色比預設按鈕的淺藍更深/更飽和，
+     避免跟「未認領」的預設藍色看起來一樣。 */
+  .mini-btn.claimed{
+    border-color:#2f6fb0; background:#e3edf9; color:#1f5185;
+  }
+  /* 第二輪(或之後)確認回寫的最終定案：故意不跟「已確認」共用綠色，改用深灰/深藍，視覺上明顯是
+     「封存」的顏色，一眼就能跟還能繼續操作的綠色「已確認」分開。改成不可點的 <span>，游標跟按下去
+     的回饋都改成「不是按鈕」的樣子，避免使用者以為點了會有動作 */
+  .mini-btn.locked-final{
+    cursor:default; border-color:#5a6472; background:#e5e8eb; color:#434b56;
+  }
+  .mini-btn.locked-final:active{ background:#e5e8eb; color:#434b56; }
   /* 已標記但尚未確認回寫的中繼狀態，跟「已確認」的綠色拉開區隔，避免兩顆按鈕看起來一樣 */
   .mini-btn.pending-mark{
     border-color:#c45a1e; background:#fdf0e4; color:#c45a1e;
@@ -1955,12 +1968,23 @@ function renderAssignChecklistStep(){
       '</div>';
     }
 
-    var confirmTagHtml = rowR && rowR.confirmed
-      ? '<span class="assign-confirm-tag">✓已確認</span>' : '';
+    // 已確認(第一輪回寫完，還沒開第二輪)／已定案(第二輪或之後回寫完，不能再開下一輪)：兩者都已經是
+    // 複盤的終點狀態，不需要、也不該再被主管指派——這裡直接反灰不可勾，避免主管沒看清楚重複勾選；
+    // 要開第二輪走 key in 在彙總明細點「已確認」，不走這個指派頁。判定跟彙總明細那顆按鈕
+    // (見 markToggleBtnHtml)同一套邏輯：confirmed && everReopened = 已定案，否則 = 已確認。
+    if(rowR && rowR.confirmed){
+      var finalStatusText = rowR.everReopened ? '已定案' : '已確認';
+      var finalStatusClass = rowR.everReopened ? 'locked-final' : 'confirmed';
+      return '<div class="assign-row assign-row-locked">'+
+        '<span style="min-width:0; overflow-wrap:break-word;">'+label+'</span>'+
+        '<span class="assign-badge '+finalStatusClass+'">'+finalStatusText+'</span>'+
+      '</div>';
+    }
+
     var assignedTo = String(state.assignments[k] || "").trim();
     if(assignedTo){
       return '<div class="assign-row assign-row-locked" data-action="assign-reassign-confirm" data-key="'+escapeHtml(k)+'" data-assigned="'+escapeHtml(assignedTo)+'">'+
-        '<span style="min-width:0; overflow-wrap:break-word;">'+label+confirmTagHtml+'</span>'+
+        '<span style="min-width:0; overflow-wrap:break-word;">'+label+'</span>'+
         '<span class="assign-badge">已派：'+escapeHtml(assignedTo)+'</span>'+
       '</div>';
     }
@@ -1972,10 +1996,14 @@ function renderAssignChecklistStep(){
   }
 
   // 產生一個型號的收合區塊，標題直接顯示「已勾／未派／共」三個數字，不用展開就能掌握狀態。
-  // 第二輪格子不算進「未派」：這批已經自動歸品牌負責人管，不需要、也不能在這裡指派。
+  // 第二輪格子跟已確認/已定案的格子都不算進「未派」：前者已經自動歸品牌負責人管，後兩者是複盤
+  // 的終點狀態，都不需要、也不能在這裡指派(見 buildAssignRow 的同一套判斷)。
   function buildStyleGroup(styleName, keysForStyle){
     var total = keysForStyle.length;
-    var assignableKeys = keysForStyle.filter(function(k){ return !isSecondRoundRecount(state.recounts[k]); });
+    var assignableKeys = keysForStyle.filter(function(k){
+      var kr = state.recounts[k];
+      return !isSecondRoundRecount(kr) && !(kr && kr.confirmed);
+    });
     var assignedCount = assignableKeys.filter(function(k){ return !!String(state.assignments[k]||"").trim(); }).length;
     var unassignedCount = assignableKeys.length - assignedCount;
     var checkedCount = assignableKeys.filter(function(k){ return state.assignChecked[k]; }).length;
@@ -2681,7 +2709,7 @@ function renderSummary(){
           // 剛好跟原數字一樣時誤判成「還是第一輪」。
           var markToggleBtnHtml;
           if(recountR.confirmed && recountR.everReopened){
-            markToggleBtnHtml = '<span class="mini-btn marked locked-final" title="第二輪(或之後)確認回寫的最終定案，不能再開下一輪">已定案</span>';
+            markToggleBtnHtml = '<span class="mini-btn locked-final" title="第二輪(或之後)確認回寫的最終定案，不能再開下一輪">已定案</span>';
           } else if(recountR.confirmed){
             markToggleBtnHtml = '<button class="mini-btn marked" data-action="remark-recount-next-round" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已確認</button>';
           } else {
@@ -2761,7 +2789,7 @@ function renderSummary(){
             '</div>'+
             '<div class="hdr-right">'+
               styleConfirmStatusHtml+
-              '<button class="mini-btn'+(styleClaimed?' marked':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(st.style)+'">'+(styleClaimed?'✓ 已認領':'未認領')+'</button>'+
+              '<button class="mini-btn'+(styleClaimed?' claimed':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(st.style)+'">'+(styleClaimed?'✓ 已認領':'未認領')+'</button>'+
               '<div class="sg-arrow">›</div>'+
             '</div>'+
           '</div>'+
@@ -2781,7 +2809,7 @@ function renderSummary(){
     // 沒有品牌分組的獨立款式：這一層 brand-group 其實就代表單一型號，所以認領按鈕跟登錄狀態放在這裡；
     // 有品牌分組的話，這兩個都已經放在上面每個型號各自的 style-group-header 裡，這裡不重複放
     var groupClaimBtnHtml = g.brand === null
-      ? (function(){ var c = !!state.claims[groupName]; return '<button class="mini-btn'+(c?' marked':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(groupName)+'">'+(c?'✓ 已認領':'未認領')+'</button>'; })()
+      ? (function(){ var c = !!state.claims[groupName]; return '<button class="mini-btn'+(c?' claimed':'')+'" data-action="toggle-claim" data-style="'+escapeHtml(groupName)+'">'+(c?'✓ 已認領':'未認領')+'</button>'; })()
       : '';
     var groupConfirmStatusHtml = g.brand === null ? buildConfirmStatusBadgeHtml(groupName) : '';
     // 品牌層(未展開就看得到的最外層)狀態標籤：判定沿用 computeClaimBrandProgress(認領進度)跟
@@ -3006,8 +3034,24 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
   // 避免 A 機重新初盤或改了初盤人、或另一台手機確認回寫之後，B 機這裡還卡著舊資料。
   var firstValEl = itemEl.querySelector('.ri-first-val');
   if(firstValEl) firstValEl.textContent = (firstTotal !== null ? firstTotal : '—');
+  // 「初盤：OO」人名標籤只在第一輪顯示，跟 buildRecountItem() 是同一套邏輯——第二輪這裡讀到的
+  // 其實是「第一輪複盤人」不是真正的初盤人，語意錯誤，乾脆不顯示。狀態可能在畫面顯示中途改變
+  // (這格剛好被推進第二輪)，所以要能新增/移除整個元素，不能只清空文字留著空白標籤。
   var countedByEl = itemEl.querySelector('.ri-countedby');
-  if(countedByEl) countedByEl.textContent = '初盤：' + (countedBy || '未記錄');
+  if(secondRoundNow){
+    if(countedByEl) countedByEl.remove();
+  } else {
+    if(!countedByEl){
+      var titleEl = itemEl.querySelector('.ri-title');
+      if(titleEl){
+        countedByEl = document.createElement('span');
+        countedByEl.className = 'ri-countedby';
+        countedByEl.style.cssText = 'font-weight:400; color:var(--muted); font-size:12px; margin-left:8px;';
+        titleEl.appendChild(countedByEl);
+      }
+    }
+    if(countedByEl) countedByEl.textContent = '初盤：' + (countedBy || '未記錄');
+  }
 
   // 就地補上/移除「架上X／庫存Y」breakdown 小字跟「第一次（原）」標籤——有快照才顯示，
   // 邏輯跟 buildRecountItem() 一致，這裡是背景同步時就地更新版本（不整段重畫、輸入框不受影響）
@@ -3106,17 +3150,34 @@ function patchRecountItemDisplay(itemEl, key, wasDone, isDoneNow){
     lockNoteEl.remove();
   }
 
-  // 就地更新主管視角的指派徽章：第二輪格子自動歸負責人管、沒設負責人要標紅提醒主管去綁定
+  // 就地更新主管視角的指派徽章：第二輪格子現在只有「沒設定負責人」這個例外狀況才顯示(標紅提醒主管
+  // 去綁定)，有負責人就完全不顯示——自動歸品牌負責人是制度，不用逐格標人名，卡片上已經有短標籤
+  // 「⚠ 第二輪複盤」講過了。狀態會變(例如負責人剛好在這時候被設定/移除)，所以要能新增/移除整個
+  // 元素，不能只改文字，不然會留著一個內容清空但還在佔位的空白圓角框。
   var assignBadgeEl = itemEl.querySelector('.ri-assign-badge');
-  if(assignBadgeEl){
-    if(secondRoundNow){
-      assignBadgeEl.className = 'ri-assign-badge' + (keyOwners.length > 0 ? '' : ' no-owner');
-      assignBadgeEl.textContent = keyOwners.length > 0 ? '自動歸：'+keyOwners.join('、') : '⚠ 未設定負責人';
+  if(isManager()){
+    var wantNoOwnerBadge = secondRoundNow && keyOwners.length === 0;
+    if(secondRoundNow && !wantNoOwnerBadge){
+      // 第二輪且有負責人：不顯示徽章
+      if(assignBadgeEl) assignBadgeEl.remove();
     } else {
-      var assignedToNow = String(state.assignments[key] || "").trim();
-      assignBadgeEl.className = 'ri-assign-badge' + (assignedToNow ? '' : ' unassigned');
-      assignBadgeEl.textContent = assignedToNow ? '已派：'+assignedToNow : '未指派';
+      if(!assignBadgeEl){
+        assignBadgeEl = document.createElement('span');
+        assignBadgeEl.className = 'ri-assign-badge';
+        var hdrRightEl = itemEl.querySelector('.hdr-right');
+        if(hdrRightEl) hdrRightEl.insertBefore(assignBadgeEl, hdrRightEl.firstChild);
+      }
+      if(wantNoOwnerBadge){
+        assignBadgeEl.className = 'ri-assign-badge no-owner';
+        assignBadgeEl.textContent = '⚠ 未設定負責人';
+      } else {
+        var assignedToNow = String(state.assignments[key] || "").trim();
+        assignBadgeEl.className = 'ri-assign-badge' + (assignedToNow ? '' : ' unassigned');
+        assignBadgeEl.textContent = assignedToNow ? '已派：'+assignedToNow : '未指派';
+      }
     }
+  } else if(assignBadgeEl){
+    assignBadgeEl.remove();
   }
 
   // 就地更新狀態小標籤（尚無人複盤／OO 處理中／OO 複盤中／已由 OO 複盤）
@@ -3479,14 +3540,15 @@ function renderRecount(){
     var keyOwners = secondRoundNow ? brandOwnersForKey(k) : [];
     var editable = canEditRecountKey(k, r);
     // 指派標籤：只有主管看得到（非主管看到的本來就只有自己有權限的格子，不用再標一次）。
-    // 第二輪格子不再顯示「已派/未指派」——改顯示自動歸屬的負責人；沒設定負責人就是無主格，
-    // 明顯標紅提醒主管去綁定（見「品牌負責人管理」設定頁）。
+    // 第二輪格子不再逐格標負責人姓名——自動歸品牌負責人是制度，不用每格重複講一次，
+    // 卡片上已經有「⚠ 第二輪複盤」這個短標籤(見 secondRoundTagHtml)。只有沒設定負責人(無主格)
+    // 這個例外狀況才留標紅警示，因為這是需要主管處理的異常，不是常態。
     var assignedTo = String(state.assignments[k] || "").trim();
     var assignBadgeHtml = "";
     if(manager){
       if(secondRoundNow){
         assignBadgeHtml = keyOwners.length > 0
-          ? '<span class="ri-assign-badge">自動歸：'+escapeHtml(keyOwners.join('、'))+'</span>'
+          ? ""
           : '<span class="ri-assign-badge no-owner">⚠ 未設定負責人</span>';
       } else {
         assignBadgeHtml = '<span class="ri-assign-badge'+(assignedTo?'':' unassigned')+'">'+(assignedTo?'已派：'+escapeHtml(assignedTo):'未指派')+'</span>';
@@ -3532,10 +3594,16 @@ function renderRecount(){
     // 跟已確認且有快照(hasSnapshot)是同一批需要細項的狀態，統一用 showBreakdown 判斷，避免各寫各的漏掉。
     var showBreakdown = hasSnapshot || secondRoundNow;
 
+    // 「初盤：OO」人名標籤只在第一輪顯示；第二輪這裡讀到的其實是「第一輪複盤人」(見 firstSource/c
+    // 的取值邏輯)，標成「初盤」語意是錯的，乾脆不顯示——第二輪卡片只留數字：初盤→第一輪複盤→
+    // 第二輪複盤加總→差異，不需要人名。
+    var countedByTagHtml = secondRoundNow ? "" :
+      '<span class="ri-countedby" style="font-weight:400; color:var(--muted); font-size:12px; margin-left:8px;">初盤：'+escapeHtml(countedBy || '未記錄')+'</span>';
+
     return '<div class="recount-item'+(recountVal!==null?' done':'')+'" data-key="'+escapeHtml(k)+'">'+
       '<div class="ri-top">'+
         '<div class="ri-title">'+escapeHtml(style)+' · '+escapeHtml(color)+' · '+escapeHtml(size)+
-          '<span class="ri-countedby" style="font-weight:400; color:var(--muted); font-size:12px; margin-left:8px;">初盤：'+escapeHtml(countedBy || '未記錄')+'</span>'+
+          countedByTagHtml+
         '</div>'+
         '<div class="hdr-right">'+
           assignBadgeHtml+
@@ -4088,10 +4156,12 @@ function bindEvents(){
 
       else if(action === 'assign-submit'){
         if(!state.assignSelectedName){ showToast('請先選擇要指派的人'); return; }
-        // 第二輪格子不走指派，過濾掉萬一殘留在勾選狀態裡的第二輪 key（正常情況下 buildAssignRow
-        // 不會讓這種格子顯示可勾選列，這裡只是防呆）
+        // 第二輪、已確認、已定案的格子都不走指派，過濾掉萬一殘留在勾選狀態裡的這幾種 key
+        // （正常情況下 buildAssignRow 不會讓這幾種格子顯示可勾選列，這裡只是防呆）
         var keysToAssign = Object.keys(state.assignChecked).filter(function(k){
-          return state.assignChecked[k] && !isSecondRoundRecount(state.recounts[k]);
+          if(!state.assignChecked[k]) return false;
+          var kr = state.recounts[k];
+          return !isSecondRoundRecount(kr) && !(kr && kr.confirmed);
         });
         if(keysToAssign.length === 0){ showToast('請勾選要指派的格子'); return; }
 
