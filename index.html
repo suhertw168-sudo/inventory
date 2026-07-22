@@ -442,10 +442,20 @@
     font-size:11px; font-weight:700; padding:4px 9px; border-radius:6px;
     white-space:nowrap; border:none; font-family:inherit;
   }
-  .confirm-status-badge.pending{ background:#fdf0e4; color:#c45a1e; }
+  .confirm-status-badge.pending{ background:#fdf0e4; color:#c45a1e; cursor:pointer; }
+  .confirm-status-badge.pending:active{ background:#fae2cb; }
   .confirm-status-badge.relog{ background:#f0e9fb; color:#6a3fa0; cursor:pointer; }
   .confirm-status-badge.relog:active{ background:#e2d4f5; }
   .confirm-status-badge.done{ background:#e8f5ec; color:#2f7a3e; }
+  /* 複盤進度細節彈窗（唯讀）：每一格複盤任務一行，左邊顏色-尺寸、右邊即時狀態 */
+  .recount-progress-list{ max-height:55vh; overflow-y:auto; margin-top:4px; }
+  .recount-progress-row{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:9px 0; border-bottom:1px solid var(--line); font-size:14px;
+  }
+  .recount-progress-row:last-child{ border-bottom:none; }
+  .recount-progress-row .rp-cell{ color:var(--ink); font-weight:700; }
+  .recount-progress-row .rp-status{ color:var(--muted); font-size:13px; text-align:right; white-space:nowrap; }
   /* 複盤清單項目 */
   .recount-item{
     border:1px solid var(--line); border-radius:12px;
@@ -696,6 +706,20 @@
     <div class="modal-actions">
       <button type="button" class="btn secondary" id="summary-note-modal-close">關閉</button>
       <button type="button" class="btn" id="summary-note-modal-save">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 彙總明細的複盤進度細節視窗：點「⚠ 複盤處理中」「🔔 可重新登錄」徽章開啟，完全唯讀（見
+     computeRecountCellStatusText），只有 needsRelog 狀態才會多顯示「完成重登」按鈕。跟備註視窗
+     一樣獨立放在 #app 之外，不受表格橫向捲動影響、開關不觸發 render() -->
+<div class="modal-overlay" id="recount-progress-modal">
+  <div class="modal-box">
+    <div class="modal-title" id="recount-progress-modal-title"></div>
+    <div class="recount-progress-list" id="recount-progress-modal-body"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn secondary" id="recount-progress-modal-close">關閉</button>
+      <button type="button" class="btn" id="recount-progress-modal-relog-btn" style="display:none;">完成重登</button>
     </div>
   </div>
 </div>
@@ -985,6 +1009,104 @@ function closeRecountNoteModal(){
     });
   }
 })();
+
+// ---------- 彙總明細的複盤進度細節視窗（唯讀） ----------
+// 判定單一複盤格「現在該顯示什麼狀態」，優先序（由高到低）：已定案／已回寫 這兩個是終態，最先判斷；
+// 第二輪(isSecondRoundRecount)雖然 shelf/stock 會被後端清空，但要顯示「第二輪處理中」而不是「未盤」，
+// 所以排在「⏳複盤中／已填寫待回寫／未盤」這三個第一輪中繼狀態之前。
+function computeRecountCellStatusText(key){
+  var r = state.recounts[key];
+  if(!r) return "";
+  if(r.confirmed && r.everReopened) return "已定案";
+  if(r.confirmed) return "已回寫";
+  if(isSecondRoundRecount(r)){
+    var owners = brandOwnersForKey(key);
+    return owners.length ? ("第二輪處理中（"+owners.join("、")+"）") : "第二輪處理中";
+  }
+  var editingBy = String(r.editingBy || "").trim();
+  var editingAt = r.editingAt ? new Date(r.editingAt).getTime() : 0;
+  var isEditingFresh = !!editingBy && (Date.now() - editingAt) < RECOUNT_EDITING_TTL_MS;
+  if(isEditingFresh) return "⏳ "+editingBy+" 複盤中";
+  var shelfFilled = String(r.shelf || "").trim() !== "";
+  var stockFilled = String(r.stock || "").trim() !== "";
+  if(shelfFilled && stockFilled) return "已填寫，待回寫";
+  return "未盤";
+}
+// 開啟時直接用當下 state 現算列表，不打 API（見需求：彈窗開著時不強求即時刷新，關掉重開就是新的）。
+// 只列「已標記」的格子（state.recounts 有資料的），依款式結構的顏色/尺寸順序排列，找不到結構
+// （理論上不會發生，防禦性寫法）才退回照 state.recounts 既有的 key 順序列。
+function openRecountProgressModal(styleName){
+  var modal = document.getElementById('recount-progress-modal');
+  var title = document.getElementById('recount-progress-modal-title');
+  var body = document.getElementById('recount-progress-modal-body');
+  var relogBtn = document.getElementById('recount-progress-modal-relog-btn');
+  if(!modal || !body) return;
+  modal.dataset.style = styleName;
+  if(title) title.textContent = styleName;
+  var rows = [];
+  var st = state.structure.find(function(s){ return s.style === styleName; });
+  if(st){
+    st.colors.forEach(function(col){
+      col.sizes.forEach(function(sz){
+        var key = keyFor(styleName, col.name, sz);
+        if(!state.recounts[key]) return;
+        rows.push({ label: col.name+' - '+sz, status: computeRecountCellStatusText(key) });
+      });
+    });
+  } else {
+    Object.keys(state.recounts).forEach(function(key){
+      var parts = key.split("|");
+      if(parts[0] !== styleName) return;
+      rows.push({ label: parts[1]+' - '+parts[2], status: computeRecountCellStatusText(key) });
+    });
+  }
+  body.innerHTML = rows.length
+    ? rows.map(function(row){
+        return '<div class="recount-progress-row"><span class="rp-cell">'+escapeHtml(row.label)+'</span><span class="rp-status">'+escapeHtml(row.status)+'</span></div>';
+      }).join("")
+    : '<div class="sub">目前沒有已標記的複盤格。</div>';
+  // 「完成重登」按鈕只在這個型號目前正是 needsRelog 狀態時才顯示，跟徽章本身共用同一套判定
+  // （見 computeStyleConfirmStatus），避免彈窗跟徽章對不起來。
+  if(relogBtn) relogBtn.style.display = (computeStyleConfirmStatus(styleName).status === "needsRelog") ? "" : "none";
+  modal.style.display = 'flex';
+}
+function closeRecountProgressModal(){
+  var modal = document.getElementById('recount-progress-modal');
+  if(modal) modal.style.display = 'none';
+}
+(function(){
+  var modal = document.getElementById('recount-progress-modal');
+  var closeBtn = document.getElementById('recount-progress-modal-close');
+  var relogBtn = document.getElementById('recount-progress-modal-relog-btn');
+  if(closeBtn){
+    closeBtn.addEventListener('click', function(){ closeRecountProgressModal(); });
+  }
+  if(modal){
+    modal.addEventListener('click', function(ev){
+      if(ev.target === modal) closeRecountProgressModal();
+    });
+  }
+  if(relogBtn){
+    // 跟原本徽章直接點擊的行為完全相同（同一段確認文字、同一個 API），只是動作搬進彈窗裡，
+    // 避免「點徽號看細節」跟「點徽章完成重登」這兩種點擊意圖打架。
+    relogBtn.addEventListener('click', async function(){
+      var styleName = modal.dataset.style;
+      if(!styleName) return;
+      if(!confirm('確認已完成「'+styleName+'」型號的 ERP 重新登錄嗎？\n\n確認後這個提醒會消失；如果之後這個型號又有新的複盤被確認回寫，提醒會再次出現。')){
+        return;
+      }
+      try{
+        await relogStyleRemote(styleName);
+        showToast('已標記「'+styleName+'」完成重登');
+      }catch(e){
+        // relogStyleRemote 內部已經顯示錯誤 toast，這裡不用重複處理
+      }
+      closeRecountProgressModal();
+      render_keepExpanded();
+    });
+  }
+})();
+
 async function clearAllCountsRemote(){
   try{
     await apiPost({ action:"clearCounts" });
@@ -3491,14 +3613,15 @@ function computeStyleConfirmStatus(styleName){
 }
 
 // 把型號登錄狀態組成徽章 HTML，"none" 不顯示徽章（還沒登錄，不用打擾 key in 人員）。
-// "needsRelog" 是一顆可點擊的按鈕，點了問過確認才會標記重登、消掉這顆徽章。
+// "pending"／"needsRelog" 都是可點擊的按鈕，點了開啟「複盤進度細節」唯讀彈窗（見 openRecountProgressModal）；
+// "needsRelog" 原本的「完成重登」動作搬進彈窗裡的按鈕，避免「看細節」跟「完成重登」這兩種點擊意圖打架。
 function buildConfirmStatusBadgeHtml(styleName){
   var cs = computeStyleConfirmStatus(styleName);
   if(cs.status === "pending"){
-    return '<span class="confirm-status-badge pending">⚠ 複盤處理中(差'+cs.pending+'格)</span>';
+    return '<button type="button" class="confirm-status-badge pending" data-action="open-recount-progress-modal" data-style="'+escapeHtml(styleName)+'">⚠ 複盤處理中(差'+cs.pending+'格)</button>';
   }
   if(cs.status === "needsRelog"){
-    return '<button type="button" class="confirm-status-badge relog" data-action="relog-style-confirm" data-style="'+escapeHtml(styleName)+'">🔔 可重新登錄</button>';
+    return '<button type="button" class="confirm-status-badge relog" data-action="open-recount-progress-modal" data-style="'+escapeHtml(styleName)+'">🔔 可重新登錄</button>';
   }
   if(cs.status === "done"){
     return '<span class="confirm-status-badge done">✅ 已完成</span>';
@@ -4433,18 +4556,8 @@ function bindEvents(){
         render_keepExpanded();
       }
 
-      else if(action === 'relog-style-confirm'){
-        var relogStyleName = el.getAttribute('data-style');
-        if(!confirm('確認已完成「'+relogStyleName+'」型號的 ERP 重新登錄嗎？\n\n確認後這個提醒會消失；如果之後這個型號又有新的複盤被確認回寫，提醒會再次出現。')){
-          return;
-        }
-        try{
-          await relogStyleRemote(relogStyleName);
-          showToast('已標記「'+relogStyleName+'」完成重登');
-        }catch(e){
-          // relogStyleRemote 內部已經顯示錯誤 toast，這裡不用重複處理
-        }
-        render_keepExpanded();
+      else if(action === 'open-recount-progress-modal'){
+        openRecountProgressModal(el.getAttribute('data-style'));
       }
 
       else if(action === 'recount-filter'){
