@@ -741,6 +741,7 @@ var state = {
   recounts: {},         // key "style|color|size" -> {shelf, stock, note, assignee, markedAt, editingBy, editingAt} 複盤任務
   recountFilter: "",    // 複盤清單的認領人篩選（空=全部）
   recountBrandFilter: "", // 複盤清單的品牌篩選（空=全部）
+  recountStyleFilter: "", // 複盤清單的型號篩選（第二層，空=全部；切換/重置品牌篩選時要跟著清空）
   showFinalizedRecounts: false, // 主管專用：預設不列出「已定案」的格子，開了才查閱得到(唯讀查閱用途)
   claims: {},            // key 型號名稱 -> true（已認領，避免多人同時把同一型號登入ERP）。沒有這個 key = 未認領
   verified: {},          // key 型號名稱 -> true（key in 已核對 ERP 資料無差異）。認領≠核對，兩個獨立狀態，
@@ -1014,14 +1015,18 @@ function closeRecountNoteModal(){
 // 判定單一複盤格「現在該顯示什麼狀態」，優先序（由高到低）：已定案／已回寫 這兩個是終態，最先判斷；
 // 第二輪(isSecondRoundRecount)雖然 shelf/stock 會被後端清空，但要顯示「第二輪處理中」而不是「未盤」，
 // 所以排在「⏳複盤中／已填寫待回寫／未盤」這三個第一輪中繼狀態之前。
+// 狀態後面附的人名來源分兩種：「填了數字的人」用 r.assignee（已填寫待回寫／已回寫／已定案）；
+// 「誰該負責這格」用 recountResponsibleNames()（未盤／第二輪處理中）——沿用複盤清單既有的
+// 歸屬判斷（第一輪看指派紀錄、第二輪看品牌負責人），不另寫一套。
 function computeRecountCellStatusText(key){
   var r = state.recounts[key];
   if(!r) return "";
-  if(r.confirmed && r.everReopened) return "已定案";
-  if(r.confirmed) return "已回寫";
+  var assignee = String(r.assignee || "").trim();
+  if(r.confirmed && r.everReopened) return "已定案" + (assignee ? "("+assignee+")" : "");
+  if(r.confirmed) return "已回寫" + (assignee ? "("+assignee+")" : "");
   if(isSecondRoundRecount(r)){
-    var owners = brandOwnersForKey(key);
-    return owners.length ? ("第二輪處理中（"+owners.join("、")+"）") : "第二輪處理中";
+    var owners = recountResponsibleNames(key);
+    return owners.length ? ("第二輪處理中(負責人:"+owners.join("、")+")") : "第二輪處理中";
   }
   var editingBy = String(r.editingBy || "").trim();
   var editingAt = r.editingAt ? new Date(r.editingAt).getTime() : 0;
@@ -1029,8 +1034,9 @@ function computeRecountCellStatusText(key){
   if(isEditingFresh) return "⏳ "+editingBy+" 複盤中";
   var shelfFilled = String(r.shelf || "").trim() !== "";
   var stockFilled = String(r.stock || "").trim() !== "";
-  if(shelfFilled && stockFilled) return "已填寫，待回寫";
-  return "未盤";
+  if(shelfFilled && stockFilled) return "已填寫待回寫" + (assignee ? "("+assignee+")" : "");
+  var responsible = recountResponsibleNames(key);
+  return responsible.length ? ("未盤(已派:"+responsible.join("、")+")") : "未盤(尚未指派)";
 }
 // 開啟時直接用當下 state 現算列表，不打 API（見需求：彈窗開著時不強求即時刷新，關掉重開就是新的）。
 // 只列「已標記」的格子（state.recounts 有資料的），依款式結構的顏色/尺寸順序排列，找不到結構
@@ -3708,6 +3714,43 @@ function renderRecount(){
     brandFilterBtns += '<button class="chip'+(state.recountBrandFilter==="__nobrand__"?" active":"")+'" data-action="recount-brand-filter" data-brand="__nobrand__">未分組</button>';
   }
 
+  // 這一格是否屬於目前選定的品牌篩選（passFilter 跟型號篩選器的分組都共用這條，避免各寫一套）
+  function keyMatchesBrandFilter(k){
+    var b = brandOfKey(k);
+    if(state.recountBrandFilter === "__nobrand__") return !b;
+    if(state.recountBrandFilter !== "") return b === state.recountBrandFilter;
+    return true;
+  }
+
+  // 型號篩選器（第二層，只在選了特定品牌／未分組時才出現——「全部品牌」底下型號太多，列出來沒意義）。
+  // 範圍是「目前可見（已套身分過濾）＋目前品牌篩選」內有複盤格子的型號，不受複盤人篩選影響，
+  // 這樣切換複盤人篩選時型號 chips 的選項/數字不會一直跳動。依款式結構順序排列，跟彙總頁一致。
+  var styleFilterBtns = "";
+  var hasStyleFilterRow = state.recountBrandFilter !== "";
+  if(hasStyleFilterRow){
+    var styleCounts = {}; // style -> 格數
+    var styleOrder = [];
+    keys.forEach(function(k){
+      if(!keyMatchesBrandFilter(k)) return;
+      var style = k.split("|")[0];
+      if(!styleCounts.hasOwnProperty(style)){ styleCounts[style] = 0; styleOrder.push(style); }
+      styleCounts[style]++;
+    });
+    var structureOrderMap = {};
+    state.structure.forEach(function(s, idx){ structureOrderMap[s.style] = idx; });
+    styleOrder.sort(function(a,b){
+      var ai = structureOrderMap.hasOwnProperty(a) ? structureOrderMap[a] : 9999;
+      var bi = structureOrderMap.hasOwnProperty(b) ? structureOrderMap[b] : 9999;
+      if(ai !== bi) return ai - bi;
+      return a.localeCompare(b, 'zh-Hant');
+    });
+    styleFilterBtns = '<button class="chip'+(state.recountStyleFilter===""?" active":"")+'" data-action="recount-style-filter" data-style="">全部</button>';
+    styleOrder.forEach(function(style){
+      var isActive = state.recountStyleFilter === style;
+      styleFilterBtns += '<button class="chip'+(isActive?" active":"")+'" data-action="recount-style-filter" data-style="'+escapeHtml(style)+'">'+escapeHtml(style)+'('+styleCounts[style]+')</button>';
+    });
+  }
+
   // 產生單一複盤項目的 HTML
   function buildRecountItem(k){
     var r = state.recounts[k];
@@ -3883,9 +3926,9 @@ function renderRecount(){
       if(!matches) return false;
     }
     // 品牌篩選
-    var b = brandOfKey(k);
-    if(state.recountBrandFilter === "__nobrand__"){ if(b) return false; }
-    else if(state.recountBrandFilter !== ""){ if(b !== state.recountBrandFilter) return false; }
+    if(!keyMatchesBrandFilter(k)) return false;
+    // 型號篩選（第二層，交集關係，見 keyMatchesBrandFilter 上方的說明）
+    if(state.recountStyleFilter !== "" && k.split("|")[0] !== state.recountStyleFilter) return false;
     return true;
   }
 
@@ -3969,6 +4012,10 @@ function renderRecount(){
       '<p class="sub">共 '+keys.length+' 筆。填入架上、庫存的複盤數字（都可以加可以乘），兩格都填了會自動跟第一次盤點的加總對照差異。備註為選填，沒填不影響完成進度。誰實際填了數字，複盤人就自動記成誰，不用手動輸入；打字時如果別人也在盤同一格，旁邊會提醒「OO 複盤中」（僅提醒，不會鎖住輸入）。</p>'+
       '<div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px;">依品牌篩選</div>'+
       '<div class="chip-strip" style="margin-bottom:12px;">'+brandFilterBtns+'</div>'+
+      (hasStyleFilterRow ? (
+        '<div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px;">依型號篩選</div>'+
+        '<div class="chip-strip" style="margin-bottom:12px;">'+styleFilterBtns+'</div>'
+      ) : '')+
       '<div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px;">依複盤人篩選</div>'+
       '<div class="chip-strip" style="margin-bottom:16px;">'+filterBtns+'</div>'+
       rowsHtml+
@@ -4311,7 +4358,7 @@ function bindEvents(){
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
 
       else if(action === 'goto-recount'){
-        state.view = "recount"; state.recountFilter = ""; state.recountBrandFilter = "";
+        state.view = "recount"; state.recountFilter = ""; state.recountBrandFilter = ""; state.recountStyleFilter = "";
         ensureRecountUserName();
         render();
       }
@@ -4567,6 +4614,12 @@ function bindEvents(){
 
       else if(action === 'recount-brand-filter'){
         state.recountBrandFilter = el.getAttribute('data-brand');
+        state.recountStyleFilter = ""; // 品牌篩選一變動，第二層的型號篩選就跟著重置回「全部」
+        render();
+      }
+
+      else if(action === 'recount-style-filter'){
+        state.recountStyleFilter = el.getAttribute('data-style');
         render();
       }
 
