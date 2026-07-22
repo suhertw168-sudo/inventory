@@ -541,6 +541,13 @@
     padding:10px 0 8px; margin-top:6px;
     border-bottom:2px solid #f0d8cd; margin-bottom:12px;
   }
+  /* 同一品牌(或無品牌)分組內，「未完成」跟「已回寫完成」兩批之間的分隔線——
+     故意用比品牌標題更淡的樣式，避免被誤認成另一個品牌 */
+  .recount-divider{
+    font-size:12px; font-weight:700; color:var(--muted);
+    padding:6px 0; margin:4px 0 10px; border-top:1px dashed var(--line);
+    text-align:center;
+  }
   /* 複盤進度總覽 */
   .rp-brand-group{ margin-bottom:10px; }
   .rp-pending-item{
@@ -3034,6 +3041,17 @@ function brandOwnersForKey(key){
   return (state.brandOwners[brand] || []).filter(function(n){ return !!n; });
 }
 
+// 主管視角「這一格算誰的」——複盤清單「依複盤人篩選」的比對來源，跟 visibleRecountKeys() 判斷
+// 非主管看不看得到同一格是同一套依據：第一輪看指派紀錄(state.assignments，不管盤了沒)，
+// 第二輪不走指派，直接看品牌負責人(自動歸戶)。故意不比對 recounts[k].assignee(誰實際填了數字)，
+// 那個欄位要盤完才有值，拿來篩人的話「指派了但還沒盤」的格子永遠篩不到，主管想追蹤的對象反而消失。
+function recountResponsibleNames(key){
+  var r = state.recounts[key];
+  if(isSecondRoundRecount(r)) return brandOwnersForKey(key);
+  var a = String(state.assignments[key] || "").trim();
+  return a ? [a] : [];
+}
+
 // 目前這台手機的身分是否可以填寫某一格的複盤數字：主管一律可以；第二輪格子(isSecondRoundRecount)
 // 不再走指派，只有這格所屬品牌的負責人可以，其他人一律鎖住——即使因為畫面還沒重整而看得到這格
 // (見 patchRecountItemDisplay 的鎖定就地更新)，也不能填。第一輪格子沒有額外的編輯限制：
@@ -3509,15 +3527,15 @@ function renderRecount(){
   // 記錄這次真的把清單畫出來時，畫面上有哪些品項，當作之後判斷「清單有沒有變動」的基準點
   recountRenderedKeys = keys.slice();
 
-  // 收集所有認領人(用於篩選)。認領人姓名都是英文字母，不分大小寫視為同一人
-  // （例如 "Amy" 跟 "amy" 歸類成同一個篩選項目），顯示用大小寫取第一次出現的那個寫法。
+  // 收集所有篩選用人名，來源是 recountResponsibleNames()（指派紀錄／品牌負責人），不是
+  // recounts[k].assignee（誰實際填了數字）——這樣「指派了但還沒盤」的人也會出現在篩選列。
+  // 姓名不分大小寫視為同一人（例如 "Amy" 跟 "amy" 歸類成同一個篩選項目），顯示用大小寫取第一次出現的那個寫法。
   var assigneeCanonical = {}; // 小寫 -> 顯示用原始大小寫
   keys.forEach(function(k){
-    var a = String(state.recounts[k].assignee || "").trim();
-    if(a){
+    recountResponsibleNames(k).forEach(function(a){
       var lower = a.toLowerCase();
       if(!assigneeCanonical.hasOwnProperty(lower)) assigneeCanonical[lower] = a;
-    }
+    });
   });
   var assignees = Object.keys(assigneeCanonical).map(function(lower){ return assigneeCanonical[lower]; });
   assignees.sort(function(a,b){ return a.localeCompare(b, 'zh-Hant'); });
@@ -3546,12 +3564,12 @@ function renderRecount(){
   });
   var hasNoBrand = keys.some(function(k){ return !brandOfKey(k); });
 
-  // 認領人篩選器：順序固定「全部」→「尚無人複盤」→ 其他人名，
-  // 尚無人複盤排第二個是刻意的，不跟著人名數量往後擠，才好找
+  // 認領人篩選器：順序固定「全部」→「尚未指派」→ 其他人名，
+  // 尚未指派排第二個是刻意的，不跟著人名數量往後擠，才好找
   var filterBtns = '<button class="chip'+(state.recountFilter===""?" active":"")+'" data-action="recount-filter" data-assignee="">全部</button>';
-  var hasUnassigned = keys.some(function(k){ return !String(state.recounts[k].assignee || "").trim(); });
+  var hasUnassigned = keys.some(function(k){ return recountResponsibleNames(k).length === 0; });
   if(hasUnassigned){
-    filterBtns += '<button class="chip'+(state.recountFilter==="__none__"?" active":"")+'" data-action="recount-filter" data-assignee="__none__">尚無人複盤</button>';
+    filterBtns += '<button class="chip'+(state.recountFilter==="__none__"?" active":"")+'" data-action="recount-filter" data-assignee="__none__">尚未指派</button>';
   }
   assignees.forEach(function(a){
     var isActive = state.recountFilter !== "" && state.recountFilter !== "__none__" && state.recountFilter.toLowerCase() === a.toLowerCase();
@@ -3731,10 +3749,16 @@ function renderRecount(){
 
   // 判斷某 key 是否通過目前的篩選條件
   function passFilter(k){
-    var assignee = String(state.recounts[k].assignee || "").trim();
-    // 認領人篩選：姓名不分大小寫視為同一人
-    if(state.recountFilter === "__none__"){ if(assignee) return false; }
-    else if(state.recountFilter !== ""){ if(assignee.toLowerCase() !== state.recountFilter.toLowerCase()) return false; }
+    // 認領人篩選：比對來源是 recountResponsibleNames()（指派紀錄／品牌負責人），
+    // 不論這格盤完了沒都算——主管篩人要看的是「派給他的」，不是「他已經交回的」。
+    // 姓名不分大小寫視為同一人。
+    var names = recountResponsibleNames(k);
+    if(state.recountFilter === "__none__"){ if(names.length > 0) return false; }
+    else if(state.recountFilter !== ""){
+      var target = state.recountFilter.toLowerCase();
+      var matches = names.some(function(n){ return n.toLowerCase() === target; });
+      if(!matches) return false;
+    }
     // 品牌篩選
     var b = brandOfKey(k);
     if(state.recountBrandFilter === "__nobrand__"){ if(b) return false; }
@@ -3754,6 +3778,27 @@ function renderRecount(){
     else noBrandKeys.push(k);
   });
 
+  // 未完成／已回寫完成分兩批：未完成(還沒按「完成回寫」，主管要追的)排前面，
+  // 已回寫完成(r.confirmed，已經交回的)排後面，中間插分隔線，一眼分開「還欠的 vs 交回的」。
+  // 沒填數字跟填了數字但還沒按確認，都算「未完成」——真正回寫進彙總才算數。
+  function splitOutstandingDone(arr){
+    var outstanding = [], done = [];
+    arr.forEach(function(k){
+      (state.recounts[k].confirmed ? done : outstanding).push(k);
+    });
+    return { outstanding: outstanding, done: done };
+  }
+  function renderGroupRows(keysArr){
+    var split = splitOutstandingDone(keysArr);
+    var html = "";
+    split.outstanding.forEach(function(k){ html += safeBuildRecountItem(k); });
+    if(split.done.length > 0){
+      if(split.outstanding.length > 0) html += '<div class="recount-divider">已回寫完成</div>';
+      split.done.forEach(function(k){ html += safeBuildRecountItem(k); });
+    }
+    return html;
+  }
+
   // 依品牌順序組裝分組區塊
   var rowsHtml = "";
   if(shownCount === 0){
@@ -3761,7 +3806,7 @@ function renderRecount(){
   } else {
     // 沒品牌的排最前
     if(noBrandKeys.length > 0){
-      noBrandKeys.forEach(function(k){ rowsHtml += safeBuildRecountItem(k); });
+      rowsHtml += renderGroupRows(noBrandKeys);
     }
     brands.forEach(function(b){
       if(!byBrand[b]) return;
@@ -3772,7 +3817,7 @@ function renderRecount(){
       }).length;
       rowsHtml += '<div class="recount-brand-head" data-brand="'+escapeHtml(b)+'" data-done="'+doneN+'" data-total="'+total+'">'+escapeHtml(b)+
         ' <span class="rb-count" style="font-weight:600; color:var(--muted); font-size:12px;">（'+doneN+'/'+total+' 已複盤）</span></div>';
-      byBrand[b].forEach(function(k){ rowsHtml += safeBuildRecountItem(k); });
+      rowsHtml += renderGroupRows(byBrand[b]);
     });
   }
 
