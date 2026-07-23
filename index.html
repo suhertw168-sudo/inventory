@@ -74,6 +74,42 @@
     font-size:12px; color:var(--muted); margin-top:6px;
     font-weight:600;
   }
+  /* 首頁專用的整場盤點進度條：跟上面 .progress-bar 系列（品牌/型號小進度條）分開一套 class，
+     只有首頁這條要放大字百分比＋色階，不影響其他地方既有的細長進度條樣式。 */
+  .home-progress-wrap{ margin-top:10px; }
+  .home-progress-top{
+    display:flex; justify-content:space-between; align-items:baseline;
+    margin-bottom:6px; gap:10px;
+  }
+  .home-progress-sub{ font-size:12px; color:var(--muted); font-weight:600; }
+  .home-progress-pct{
+    font-size:30px; font-weight:800; line-height:1;
+    font-variant-numeric:proportional-nums;
+  }
+  .home-progress-bar{
+    height:14px; background:#e9e3d6; border-radius:8px; overflow:hidden;
+  }
+  .home-progress-fill{
+    height:100%; border-radius:8px;
+    transition: width .3s ease, background-color .3s ease;
+  }
+  /* 色階：0-30紅／30-60橘／60-90黃／90-99淺綠／100亮綠，跟數字本身一起看，不單靠顏色傳達進度 */
+  .home-progress-pct-low, .home-progress-fill-low{ color:#c0392b; background:#c0392b; }
+  .home-progress-pct-mid, .home-progress-fill-mid{ color:#c45a1e; background:#c45a1e; }
+  .home-progress-pct-warn, .home-progress-fill-warn{ color:#a67c00; background:#c99a10; }
+  .home-progress-pct-near, .home-progress-fill-near{ color:#3f8a5c; background:#4f9e6b; }
+  .home-progress-pct-complete, .home-progress-fill-complete{ color:#1f8a3c; background:#2f9e44; }
+  /* 100% 完成的輕微慶祝感：進度條脈動一下即可，不是持續閃爍打擾人，重新整理/重畫時會再播一次。
+     class 直接加在外框(.home-progress-bar-complete)上，不依賴 :has() 這類較新的 CSS 選擇器，
+     相容性比較安全。 */
+  @keyframes home-progress-pulse{
+    0%{ box-shadow:0 0 0 0 rgba(47,158,68,.45); }
+    70%{ box-shadow:0 0 0 10px rgba(47,158,68,0); }
+    100%{ box-shadow:0 0 0 0 rgba(47,158,68,0); }
+  }
+  .home-progress-bar-complete{
+    animation: home-progress-pulse 1.3s ease-out 1;
+  }
   main{
     flex:1;
     padding:18px;
@@ -2101,6 +2137,15 @@ function doneSizeSlots(structure, counts){
 function colorDone(style, color, counts){
   return color.sizes.every(function(sz){ return slotComplete(counts[keyFor(style.style, color.name, sz)]); });
 }
+// 首頁整場進度條的色階，純視覺分段，不影響底層完成度計算：0-30紅／30-60橘／60-90黃／90-99淺綠／100亮綠，
+// 每個百分比只對應一個色階，數字本身才是主要資訊，顏色只是輔助（不單靠顏色傳達進度）。
+function homeProgressBand(pct){
+  if(pct >= 100) return 'complete';
+  if(pct >= 90) return 'near';
+  if(pct >= 60) return 'warn';
+  if(pct >= 30) return 'mid';
+  return 'low';
+}
 function styleProgress(style, counts){
   var total=0, done=0;
   style.colors.forEach(function(c){
@@ -2432,6 +2477,7 @@ function renderHome(){
   var total = totalSizeSlots(structure);
   var done = doneSizeSlots(structure, state.counts);
   var pct = total ? Math.round(done/total*100) : 0;
+  var progressBand = homeProgressBand(pct);
 
   // 複盤任務入口：算出待複盤筆數。非主管只算指派給自己的筆數，跟點進複盤頁看到的數字一致。
   var recountKeys = visibleRecountKeys();
@@ -2470,9 +2516,12 @@ function renderHome(){
       '<div class="brand">盤點工具</div>'+
       '<button class="icon-btn warn-btn" data-action="goto-setup">🔒 管理用設定</button>'+
     '</div>'+
-    '<div class="progress-wrap">'+
-      '<div class="progress-bar"><div class="progress-fill" style="width:'+pct+'%"></div></div>'+
-      '<div class="progress-label"><span>整體進度 '+done+' / '+total+'</span><span>'+pct+'%</span></div>'+
+    '<div class="home-progress-wrap">'+
+      '<div class="home-progress-top">'+
+        '<span class="home-progress-sub">整體盤點進度 · '+done+' / '+total+' 格</span>'+
+        '<span class="home-progress-pct home-progress-pct-'+progressBand+'">'+pct+'%</span>'+
+      '</div>'+
+      '<div class="home-progress-bar'+(progressBand==='complete'?' home-progress-bar-complete':'')+'"><div class="home-progress-fill home-progress-fill-'+progressBand+'" style="width:'+pct+'%"></div></div>'+
     '</div>'+
     '<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 16px 10px; font-size:12px; color:var(--muted);">'+
       '<span id="sync-status">'+getSyncStatusText()+'</span>'+
@@ -4513,6 +4562,16 @@ function bindEvents(){
       }
 
       else if(action === 'refresh-summary'){
+        // 這個 action 有兩個觸發點共用：右上角「🔄 更新」按鈕、跟「🔔 有新資料」橫幅，el 是實際被點的
+        // 那一個，兩邊都要有視覺回饋。點擊瞬間先鎖住這個節點防止重複觸發、換成轉圈+「更新中…」；
+        // syncFromBackend() 真的會打後端(不像複盤清單那顆橫幅只是本地重畫)，await 本身就會讓瀏覽器
+        // 有機會先畫出這個載入狀態，不用額外用 requestAnimationFrame 撐。同步失敗 syncFromBackend()
+        // 內部會靜默吞掉(不會 throw)，重畫時 render_keepExpanded() 會把整頁換掉，橫幅跟這顆按鈕
+        // 都會變成全新節點、spinner 狀態自然消失，不用手動還原文字。
+        if(el.dataset.refreshing === '1') return;
+        el.dataset.refreshing = '1';
+        el.style.cursor = 'default';
+        el.innerHTML = '<span class="btn-spinner"></span>更新中…';
         await syncFromBackend();
         render_keepExpanded(); // 記住目前展開的品牌跟型號，刷新後重新展開（不破壞使用者的操作狀態）
         showToast("明細已更新");
