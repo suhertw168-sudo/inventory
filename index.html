@@ -85,6 +85,7 @@
   .home-progress-pct{
     font-size:30px; font-weight:800; line-height:1;
     font-variant-numeric:proportional-nums;
+    color:var(--ink); /* 數字本身維持一般文字色，不跟著色階變色——顏色只放在下面的進度條填色上 */
   }
   .home-progress-bar{
     height:14px; background:#e9e3d6; border-radius:8px; overflow:hidden;
@@ -93,12 +94,12 @@
     height:100%; border-radius:8px;
     transition: width .3s ease, background-color .3s ease;
   }
-  /* 色階：0-30紅／30-60橘／60-90黃／90-99淺綠／100亮綠，跟數字本身一起看，不單靠顏色傳達進度 */
-  .home-progress-pct-low, .home-progress-fill-low{ color:#c0392b; background:#c0392b; }
-  .home-progress-pct-mid, .home-progress-fill-mid{ color:#c45a1e; background:#c45a1e; }
-  .home-progress-pct-warn, .home-progress-fill-warn{ color:#a67c00; background:#c99a10; }
-  .home-progress-pct-near, .home-progress-fill-near{ color:#3f8a5c; background:#4f9e6b; }
-  .home-progress-pct-complete, .home-progress-fill-complete{ color:#1f8a3c; background:#2f9e44; }
+  /* 色階：0-30紅／30-60橘／60-90黃／90-99淺綠／100亮綠，只套在進度條填色上 */
+  .home-progress-fill-low{ background:#c0392b; }
+  .home-progress-fill-mid{ background:#c45a1e; }
+  .home-progress-fill-warn{ background:#c99a10; }
+  .home-progress-fill-near{ background:#4f9e6b; }
+  .home-progress-fill-complete{ background:#2f9e44; }
   /* 100% 完成的輕微慶祝感：進度條脈動一下即可，不是持續閃爍打擾人，重新整理/重畫時會再播一次。
      class 直接加在外框(.home-progress-bar-complete)上，不依賴 :has() 這類較新的 CSS 選擇器，
      相容性比較安全。 */
@@ -2519,7 +2520,7 @@ function renderHome(){
     '<div class="home-progress-wrap">'+
       '<div class="home-progress-top">'+
         '<span class="home-progress-sub">整體盤點進度 · '+done+' / '+total+' 格</span>'+
-        '<span class="home-progress-pct home-progress-pct-'+progressBand+'">'+pct+'%</span>'+
+        '<span class="home-progress-pct">'+pct+'%</span>'+
       '</div>'+
       '<div class="home-progress-bar'+(progressBand==='complete'?' home-progress-bar-complete':'')+'"><div class="home-progress-fill home-progress-fill-'+progressBand+'" style="width:'+pct+'%"></div></div>'+
     '</div>'+
