@@ -765,6 +765,8 @@ var state = {
                           // 沒有這個 key = 未核對；沒有複盤任務時，要「認領+核對」才算完成(見 computeStyleConfirmStatus)
   people: [],            // 人員名單（姓名陣列），供「複盤/盤點身分」選單使用
   managers: [],          // 主管名單（姓名陣列），從人員名單中挑選，判定 isManager() 用
+  keyinUsers: [],        // key in 人員名單（姓名陣列），從人員名單中挑選，判定 isKeyinUser() 用——
+                          // 彙總明細頁認領/核對/標記複盤/備註/完成重登這幾個操作按鈕的權限名單，主管自動豁免
   assignments: {},       // key "style|color|size" -> 指派給的姓名，複盤分配用，跟「複盤人」(recounts[key].assignee) 是不同概念
   brandOwners: {},       // 品牌名稱 -> [負責人1, 負責人2]（固定兩格，沒設定是空字串），第二輪複盤導向指派用
   assignSelectedName: "", // 指派頁目前選定要指派的對象（暫存，離開頁面不特別清除，方便連續指派給同一人）
@@ -1017,6 +1019,8 @@ function closeRecountNoteModal(){
   }
   if(saveBtn){
     saveBtn.addEventListener('click', async function(){
+      // 防呆：開啟這個彈窗的入口按鈕理論上只有 key in 身分(或主管)看得到，這裡再擋一次避免繞過畫面觸發
+      if(!canOperateSummary()) return;
       var style = modal.dataset.style, color = modal.dataset.color, size = modal.dataset.size;
       var textarea = document.getElementById('summary-note-modal-textarea');
       var noteVal = textarea ? textarea.value.trim() : "";
@@ -1088,9 +1092,10 @@ function openRecountProgressModal(styleName){
         return '<div class="recount-progress-row"><span class="rp-cell">'+escapeHtml(row.label)+'</span><span class="rp-status">'+escapeHtml(row.status)+'</span></div>';
       }).join("")
     : '<div class="sub">目前沒有已標記的複盤格。</div>';
-  // 「完成重登」按鈕只在這個型號目前正是 needsRelog 狀態時才顯示，跟徽章本身共用同一套判定
-  // （見 computeStyleConfirmStatus），避免彈窗跟徽章對不起來。
-  if(relogBtn) relogBtn.style.display = (computeStyleConfirmStatus(styleName).status === "needsRelog") ? "" : "none";
+  // 「完成重登」按鈕只在這個型號目前正是 needsRelog 狀態、且身分是 key in(或主管)時才顯示，
+  // 跟徽章本身共用同一套判定（見 computeStyleConfirmStatus），避免彈窗跟徽章對不起來；徽章跟這個
+  // 彈窗本身全員都能開（純檢視），只有裡面這顆「完成重登」實際動作按鈕才受權限管控。
+  if(relogBtn) relogBtn.style.display = (computeStyleConfirmStatus(styleName).status === "needsRelog" && canOperateSummary()) ? "" : "none";
   modal.style.display = 'flex';
 }
 function closeRecountProgressModal(){
@@ -1113,6 +1118,8 @@ function closeRecountProgressModal(){
     // 跟原本徽章直接點擊的行為完全相同（同一段確認文字、同一個 API），只是動作搬進彈窗裡，
     // 避免「點徽號看細節」跟「點徽章完成重登」這兩種點擊意圖打架。
     relogBtn.addEventListener('click', async function(){
+      // 防呆：這顆按鈕理論上只有 key in 身分(或主管)看得到，這裡再擋一次避免繞過畫面觸發
+      if(!canOperateSummary()) return;
       var styleName = modal.dataset.style;
       if(!styleName) return;
       if(!confirm('確認已完成「'+styleName+'」型號的 ERP 重新登錄嗎？\n\n確認後這個提醒會消失；如果之後這個型號又有新的複盤被確認回寫，提醒會再次出現。')){
@@ -1148,6 +1155,18 @@ function isManager(){
   var current = getRecountUserName();
   if(!current) return false;
   return (state.managers || []).indexOf(current) !== -1;
+}
+// 目前這台手機的身分是否在 key in 名單裡：判定邏輯跟 isManager() 同一套比對方式
+function isKeyinUser(){
+  var current = getRecountUserName();
+  if(!current) return false;
+  return (state.keyinUsers || []).indexOf(current) !== -1;
+}
+// 彙總明細頁「認領/取消認領、核對完成/取消、標記複盤/取消(含已複盤)、複盤備註編輯、完成重登」
+// 這幾個操作按鈕能不能點的統一判定——key in 名單內的身分，或主管（主管一律豁免，不用額外把自己
+// 加進 key in 名單）。全站只有這一個判定點，五個位置都呼叫這裡，不各自重複判斷。
+function canOperateSummary(){
+  return isManager() || isKeyinUser();
 }
 // 目前這台手機「看得到」的複盤格子 key 清單：主管預設看全部，但「已完結」(已回寫或已定案，
 // 兩種都是 r.confirmed=true)的格子預設濾掉，避免清單一直堆積已經結束的格子——開啟
@@ -1465,9 +1484,11 @@ async function addPersonRemote(name){
 async function deletePersonRemote(name){
   var idx = state.people.indexOf(name);
   if(idx !== -1) state.people.splice(idx, 1);
-  // 如果這個人同時是主管，本地也一併移除主管身分（後端 deletePerson 內部同樣會連動移除）
+  // 如果這個人同時是主管/key in 人員，本地也一併移除身分（後端 deletePerson 內部同樣會連動移除）
   var mgrIdx = state.managers.indexOf(name);
   if(mgrIdx !== -1) state.managers.splice(mgrIdx, 1);
+  var kiIdx = state.keyinUsers.indexOf(name);
+  if(kiIdx !== -1) state.keyinUsers.splice(kiIdx, 1);
   try{
     await apiPost({ action:"deletePerson", name:name });
   }catch(e){ console.error("delete person failed", e); showToast("刪除人員失敗，請檢查網路"); }
@@ -1489,6 +1510,24 @@ async function deleteManagerRemote(name){
   try{
     await apiPost({ action:"deleteManager", name:name });
   }catch(e){ console.error("delete manager failed", e); showToast("移除主管失敗，請檢查網路"); }
+}
+
+// ---------- Key in 人員名單 API ----------
+// key in 人員是從人員名單中挑選出來的子集合，寫法比照主管名單 API，一樣走樂觀更新。
+async function addKeyinUserRemote(name){
+  name = String(name || "").trim();
+  if(!name) return;
+  if(state.keyinUsers.indexOf(name) === -1) state.keyinUsers.push(name); // 本地先更新(樂觀更新)
+  try{
+    await apiPost({ action:"addKeyinUser", name:name });
+  }catch(e){ console.error("add keyin user failed", e); showToast("設定 key in 人員失敗，請檢查網路"); }
+}
+async function deleteKeyinUserRemote(name){
+  var idx = state.keyinUsers.indexOf(name);
+  if(idx !== -1) state.keyinUsers.splice(idx, 1);
+  try{
+    await apiPost({ action:"deleteKeyinUser", name:name });
+  }catch(e){ console.error("delete keyin user failed", e); showToast("移除 key in 人員失敗，請檢查網路"); }
 }
 
 // ---------- 品牌負責人 API ----------
@@ -1737,6 +1776,7 @@ async function init(){
       if(all.verified){ state.verified = all.verified; }
       if(Array.isArray(all.people)){ state.people = all.people.map(String); }
       if(Array.isArray(all.managers)){ state.managers = all.managers.map(String); }
+      if(Array.isArray(all.keyinUsers)){ state.keyinUsers = all.keyinUsers.map(String); }
       if(all.assignments){ state.assignments = normalizeAssignments(all.assignments); }
       if(all.brandOwners){ state.brandOwners = normalizeBrandOwners(all.brandOwners); }
     } else {
@@ -1885,6 +1925,7 @@ async function syncFromBackend(){
     if(all.verified){ state.verified = all.verified; }
     if(Array.isArray(all.people)){ state.people = all.people.map(String); }
     if(Array.isArray(all.managers)){ state.managers = all.managers.map(String); }
+    if(Array.isArray(all.keyinUsers)){ state.keyinUsers = all.keyinUsers.map(String); }
     if(all.assignments){ state.assignments = normalizeAssignments(all.assignments); }
     if(all.brandOwners){ state.brandOwners = normalizeBrandOwners(all.brandOwners); }
 
@@ -2517,6 +2558,20 @@ function renderSetup(){
     return '<option value="'+escapeHtml(name)+'">'+escapeHtml(name)+'</option>';
   }).join("");
 
+  // 「Key in 人員」清單：每人一列，右邊一顆移除鈕，寫法完全比照上面的主管設定
+  var keyinRows = state.keyinUsers.length === 0
+    ? emptyStateHtml('尚未設定 key in 人員', '從下面選單挑一位既有人員，設為 key in 人員')
+    : state.keyinUsers.map(function(name){
+        return '<div class="list-row">'+
+          '<div class="left">'+escapeHtml(name)+'</div>'+
+          '<button class="icon-btn" data-action="delete-keyin" data-name="'+escapeHtml(name)+'" style="color:var(--accent-deep)">移除</button>'+
+        '</div>';
+      }).join("");
+  var keyinCandidates = state.people.filter(function(name){ return state.keyinUsers.indexOf(name) === -1; });
+  var keyinCandidateOptions = keyinCandidates.map(function(name){
+    return '<option value="'+escapeHtml(name)+'">'+escapeHtml(name)+'</option>';
+  }).join("");
+
   // 為「調整品牌順序」準備清單：取出目前實際有在用的品牌（依現行順序）
   var activeBrands = [];
   computeBrandGroups().forEach(function(g){
@@ -2657,6 +2712,18 @@ function renderSetup(){
           '</div>'+
           '<button class="btn" data-action="add-manager">設為主管</button>'
         : '<p class="sub" style="margin-top:14px;">'+(state.people.length === 0 ? '請先在上面「人員名單管理」新增人員，才能挑人設為主管。' : '人員名單裡的人都已經是主管了。')+'</p>')+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>Key in 人員</h2>'+
+      '<p class="sub">從人員名單中選人設為 key in 人員。彙總明細頁的認領/取消認領、核對完成/取消、標記複盤/取消(含已複盤)、複盤備註編輯、完成重登，只有 key in 名單內的身分（或主管，主管一律豁免不用另外加）能操作，其他人看得到但按不動。移除不會刪除這個人的人員名單資料。</p>'+
+      keyinRows+
+      (keyinCandidates.length > 0
+        ? '<div class="field" style="margin-top:14px;">'+
+            '<label>從人員名單選擇要加為 key in 人員的人</label>'+
+            '<select id="new-keyin-name">'+keyinCandidateOptions+'</select>'+
+          '</div>'+
+          '<button class="btn" data-action="add-keyin">設為 key in 人員</button>'
+        : '<p class="sub" style="margin-top:14px;">'+(state.people.length === 0 ? '請先在上面「人員名單管理」新增人員，才能挑人設為 key in 人員。' : '人員名單裡的人都已經是 key in 人員了。')+'</p>')+
     '</div>'+
     // 第二輪功能關閉時整面隱藏品牌負責人設定：只藏入口，state.brandOwners 資料本身不動，
     // 之後改回 ENABLE_SECOND_ROUND=true 這個面板會原樣恢復。
@@ -2924,12 +2991,17 @@ function renderSummary(){
         var recountR = state.recounts[key];
         var isMarked = !!recountR;
         var recountCell;
+        // 全員可看，只有 key in 身分(或主管)能點——這一整塊複盤標記/取消/備註的按鈕都受這個判定管控，
+        // 非 key in 身分看到的一律換成不可點的 <span>，文字/配色不變，資訊照樣透明。
+        var canOpRecount = canOperateSummary();
         if(isMarked){
           // key in 人員是唯一知道 ERP 差異線索的人（例如「差1箱，可能庫存漏點」），這裡讓他能直接記下來。
           // 備註編輯走置中彈出的視窗（見 openRecountNoteModal），不是格子內展開——表格有橫向捲動，
           // 展開在格子裡常常會落在螢幕外找不到，改用 fixed 定位的彈窗就不受橫向捲動位置影響。
           var rNote = String(recountR.note || "").trim();
-          var noteBtnHtml = '<button class="mini-btn'+(rNote?' marked':'')+'" data-action="open-recount-note-modal" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">'+(rNote?'✎有備註':'✎備註')+'</button>';
+          var noteBtnHtml = canOpRecount
+            ? '<button class="mini-btn'+(rNote?' marked':'')+'" data-action="open-recount-note-modal" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">'+(rNote?'✎有備註':'✎備註')+'</button>'
+            : '<span class="mini-btn'+(rNote?' marked':'')+'" style="cursor:default;">'+(rNote?'✎有備註':'✎備註')+'</span>';
           // 按鈕文字盡量短：欄寬是由這欄最寬的子元素撐出來的，文字越短欄位越窄，橫向捲動距離越少
           // 第一輪回寫完顯示「已複盤」（不是「已確認」——避免被誤讀成整個流程已經結束，其實只是
           // 完成了複盤這一步，還要 key in 重登 ERP 確認數字才算真的收尾），配色維持綠色不變；
@@ -2945,9 +3017,13 @@ function renderSummary(){
             // 第二輪功能關閉中：這裡只變成不可點的純標籤，不開放再開下一輪(見 ENABLE_SECOND_ROUND)
             markToggleBtnHtml = '<span class="mini-btn marked" title="第二輪複盤功能目前關閉中" style="cursor:default;">已複盤</span>';
           } else if(recountR.confirmed){
-            markToggleBtnHtml = '<button class="mini-btn marked" data-action="remark-recount-next-round" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已複盤</button>';
+            markToggleBtnHtml = canOpRecount
+              ? '<button class="mini-btn marked" data-action="remark-recount-next-round" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已複盤</button>'
+              : '<span class="mini-btn marked" style="cursor:default;">已複盤</span>';
           } else {
-            markToggleBtnHtml = '<button class="mini-btn pending-mark" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已標記</button>';
+            markToggleBtnHtml = canOpRecount
+              ? '<button class="mini-btn pending-mark" data-action="unmark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已標記</button>'
+              : '<span class="mini-btn pending-mark" style="cursor:default;">已標記</span>';
           }
           recountCell = '<td class="num" style="white-space:nowrap;">'+
             '<div style="display:flex; flex-direction:column; gap:4px; align-items:flex-end;">'+
@@ -2956,7 +3032,9 @@ function renderSummary(){
             '</div>'+
           '</td>';
         } else {
-          recountCell = '<td class="num" style="white-space:nowrap;"><button class="mini-btn" data-action="mark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">標記</button></td>';
+          recountCell = canOpRecount
+            ? '<td class="num" style="white-space:nowrap;"><button class="mini-btn" data-action="mark-recount" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">標記</button></td>'
+            : '<td class="num" style="white-space:nowrap;"><span class="mini-btn" style="cursor:default;">標記</span></td>';
         }
         html += '<tr'+rowStyle+'>'+colorCell+'<td>'+escapeHtml(sz)+'</td>'+
           shelfCell + stockCell +
@@ -3009,7 +3087,7 @@ function renderSummary(){
         // 品牌底下多個型號：每個型號做成可摺疊的小卡片
         var styleMissingTag = built.missing > 0 ? ' <span style="background:#e87a3e; color:#fff; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700;">未輸入 '+built.missing+'</span>' : '';
         var styleTotalText = ' · 合計 '+built.total;
-        var styleClaimed = !!state.claims[st.style];
+        var styleClaimBtnHtml = buildClaimBtnHtml(st.style);
         var styleConfirmStatusHtml = buildConfirmStatusBadgeHtml(st.style);
         var styleVerifyBtnHtml = buildVerifyBtnHtml(st.style);
         bodyHtml += '<div class="style-group'+(built.missing > 0 ? ' has-missing' : '')+'">'+
@@ -3020,7 +3098,7 @@ function renderSummary(){
             '</div>'+
             '<div class="hdr-right">'+
               styleConfirmStatusHtml+
-              '<button class="mini-btn'+(styleClaimed?' claimed':' unclaimed')+'" data-action="toggle-claim" data-style="'+escapeHtml(st.style)+'">'+(styleClaimed?'✓ 已認領':'未認領')+'</button>'+
+              styleClaimBtnHtml+
               styleVerifyBtnHtml+
               '<div class="sg-arrow">›</div>'+
             '</div>'+
@@ -3040,9 +3118,7 @@ function renderSummary(){
     var metaText = metaParts.join(' · ');
     // 沒有品牌分組的獨立款式：這一層 brand-group 其實就代表單一型號，所以認領按鈕跟登錄狀態放在這裡；
     // 有品牌分組的話，這兩個都已經放在上面每個型號各自的 style-group-header 裡，這裡不重複放
-    var groupClaimBtnHtml = g.brand === null
-      ? (function(){ var c = !!state.claims[groupName]; return '<button class="mini-btn'+(c?' claimed':' unclaimed')+'" data-action="toggle-claim" data-style="'+escapeHtml(groupName)+'">'+(c?'✓ 已認領':'未認領')+'</button>'; })()
-      : '';
+    var groupClaimBtnHtml = g.brand === null ? buildClaimBtnHtml(groupName) : '';
     var groupConfirmStatusHtml = g.brand === null ? buildConfirmStatusBadgeHtml(groupName) : '';
     var groupVerifyBtnHtml = g.brand === null ? buildVerifyBtnHtml(groupName) : '';
     // 品牌層(未展開就看得到的最外層)狀態標籤：三個訊號都直接從 groupStyles 算——這就是這次迴圈
@@ -3663,14 +3739,34 @@ function buildConfirmStatusBadgeHtml(styleName){
   return "";
 }
 
+// 「認領」按鈕／「✓ 已認領」標籤：全員看得到，只有 key in 身分(或主管)按得動——認領是 key in 人員
+// 登 ERP 的動作紀錄，一般成員只需要知道有沒有人在處理，不該手滑誤觸。沒有操作權限時原樣保留文字/
+// 配色，只是換成不可點的 <span>(不帶 data-action)，跟「已定案」等既有唯讀狀態同一套視覺語言。
+function buildClaimBtnHtml(styleName){
+  var claimed = !!state.claims[styleName];
+  var cls = 'mini-btn' + (claimed ? ' claimed' : ' unclaimed');
+  var text = claimed ? '✓ 已認領' : '未認領';
+  if(!canOperateSummary()){
+    return '<span class="'+cls+'" style="cursor:default;">'+text+'</span>';
+  }
+  return '<button class="'+cls+'" data-action="toggle-claim" data-style="'+escapeHtml(styleName)+'">'+text+'</button>';
+}
+
 // 「核對完成」按鈕／「✓ 已核對」標籤：只在「已認領＋沒有複盤任務」才顯示——一個型號二選一，
 // 有差異就標記複盤(走複盤鏈，不用核對)，沒差異就核對完成，這裡不重複跟複盤鏈的徽章搶位置。
 // 「✓ 已核對」保留可點擊(不是純文字)，點了跳確認對話框才會真的取消，給誤點一個回頭路
-// (見 unverify-style-confirm 的 click handler)。
+// (見 unverify-style-confirm 的 click handler)。非 key in(且非主管)身分比照認領按鈕，
+// 文字/配色不變，只是換成不可點的 <span>。
 function buildVerifyBtnHtml(styleName){
   if(!state.claims[styleName]) return "";
   if(styleHasRecountTasks(styleName)) return "";
-  return state.verified[styleName]
+  var verified = state.verified[styleName];
+  if(!canOperateSummary()){
+    return verified
+      ? '<span class="mini-btn verified" style="cursor:default;">✓ 已核對</span>'
+      : '<span class="mini-btn" style="cursor:default;">核對完成</span>';
+  }
+  return verified
     ? '<button class="mini-btn verified" data-action="unverify-style-confirm" data-style="'+escapeHtml(styleName)+'">✓ 已核對</button>'
     : '<button class="mini-btn" data-action="verify-style" data-style="'+escapeHtml(styleName)+'">核對完成</button>';
 }
@@ -4523,6 +4619,8 @@ function bindEvents(){
       }
 
       else if(action === 'toggle-claim'){
+        // 防呆：這顆按鈕理論上只有 key in 身分(或主管)看得到，這裡再擋一次避免繞過畫面觸發
+        if(!canOperateSummary()) return;
         var claimStyleName = el.getAttribute('data-style');
         if(state.claims[claimStyleName]){
           unclaimStyleRemote(claimStyleName);
@@ -4539,6 +4637,8 @@ function bindEvents(){
       else if(action === 'verify-style'){
         // key in 核對 ERP 資料無差異，點下去直接算核對完成，不用二次確認(跟認領/標記複盤等其他
         // 正向動作一致)；要取消才需要確認，見 unverify-style-confirm
+        // 防呆：這顆按鈕理論上只有 key in 身分(或主管)看得到，這裡再擋一次避免繞過畫面觸發
+        if(!canOperateSummary()) return;
         var verifyStyleName = el.getAttribute('data-style');
         verifyStyleRemote(verifyStyleName);
         showToast('已核對「'+verifyStyleName+'」');
@@ -4547,6 +4647,8 @@ function bindEvents(){
 
       else if(action === 'unverify-style-confirm'){
         // 「✓ 已核對」誤點時的回頭路：需要二次確認才會真的取消，避免手滑點掉核對紀錄
+        // 防呆：這顆按鈕理論上只有 key in 身分(或主管)看得到，這裡再擋一次避免繞過畫面觸發
+        if(!canOperateSummary()) return;
         var unverifyStyleName = el.getAttribute('data-style');
         if(!confirm('確定要取消「'+unverifyStyleName+'」的核對完成狀態嗎？\n\n取消後這個型號會變回「待核對」，需要重新核對一次。')){
           return;
@@ -4557,6 +4659,8 @@ function bindEvents(){
       }
 
       else if(action === 'mark-recount'){
+        // 防呆：這顆按鈕理論上只有 key in 身分(或主管)看得到，這裡再擋一次避免繞過畫面觸發
+        if(!canOperateSummary()) return;
         var style = el.getAttribute('data-style');
         var color = el.getAttribute('data-color');
         var size = el.getAttribute('data-size');
@@ -4571,6 +4675,8 @@ function bindEvents(){
       else if(action === 'unmark-recount'){
         // 彙總明細的「已標記」按鈕：要不要複盤是 key in 人員依 ERP 比對在這裡決定的，
         // 所以取消也在這裡做（點擊即取消），需要二次確認避免手滑誤按（見 buildUnmarkRecountConfirmMessage）
+        // 防呆：這顆按鈕理論上只有 key in 身分(或主管)看得到，這裡再擋一次避免繞過畫面觸發
+        if(!canOperateSummary()) return;
         var style = el.getAttribute('data-style');
         var color = el.getAttribute('data-color');
         var size = el.getAttribute('data-size');
@@ -4583,6 +4689,8 @@ function bindEvents(){
       }
 
       else if(action === 'open-recount-note-modal'){
+        // 防呆：這顆按鈕理論上只有 key in 身分(或主管)看得到，這裡再擋一次避免繞過畫面觸發
+        if(!canOperateSummary()) return;
         // 只是打開一個獨立於 #app 之外的 fixed 彈窗，不觸發任何重畫，
         // 表格的橫向捲動位置、展開狀態都完全不受影響（見 openRecountNoteModal）
         openRecountNoteModal(el.getAttribute('data-style'), el.getAttribute('data-color'), el.getAttribute('data-size'));
@@ -4592,6 +4700,8 @@ function bindEvents(){
         // 彙總明細的「已複盤」按鈕：不是取消，是開啟第二輪——上一輪的確認紀錄會保留。
         // 真的要整筆刪掉已確認紀錄的例外情況，目前沒有入口（複盤清單頁的「取消複盤」已移除，
         // 取消標記的權責統一收回彙總明細的「已標記→取消」）。
+        // 防呆：這顆按鈕理論上只有 key in 身分(或主管)看得到，這裡再擋一次避免繞過畫面觸發
+        if(!canOperateSummary()) return;
         var rmStyle = el.getAttribute('data-style');
         var rmColor = el.getAttribute('data-color');
         var rmSize = el.getAttribute('data-size');
@@ -4683,8 +4793,23 @@ function bindEvents(){
       }
       else if(action === 'refresh-recount-list'){
         // 使用者主動點了「清單有變動」提示才重畫：資料在背景同步當下就已經寫進 state.recounts，
-        // 這裡單純把清單重新畫出來，重畫時 renderRecount() 會自動重設變動基準點，橫幅跟著消失
+        // 這裡完全不重新打後端，只是把清單重新畫出來，重畫時 renderRecount() 會自動重設變動基準點，
+        // 橫幅（連同這個 DOM 節點本身）跟著被換掉、自然消失，不用手動還原文字/狀態。
+        // render() 是同步的字串組裝＋innerHTML 賦值，資料量大時可能有感延遲；直接接著呼叫的話瀏覽器
+        // 來不及先畫出「更新中…」就被這段同步工作卡住，使用者會看不到任何回饋、以為沒點到而重複點——
+        // 這裡先鎖住這個節點防止重複觸發，再用兩層 requestAnimationFrame 讓瀏覽器有機會先畫出載入狀態，
+        // 才進真正耗時的重畫；同時量測這段耗時，印到 console 方便回報實際數字、判斷要不要優化。
+        if(el.dataset.refreshing === '1') return;
+        el.dataset.refreshing = '1';
+        el.style.cursor = 'default';
+        el.innerHTML = '<span class="btn-spinner"></span>更新中…';
+        await new Promise(function(resolve){
+          requestAnimationFrame(function(){ requestAnimationFrame(resolve); });
+        });
+        var refreshT0 = (window.performance && performance.now) ? performance.now() : Date.now();
         render();
+        var refreshElapsed = ((window.performance && performance.now) ? performance.now() : Date.now()) - refreshT0;
+        console.log('[perf] 複盤清單重畫耗時 ' + refreshElapsed.toFixed(1) + ' ms（' + visibleRecountKeys().length + ' 筆可見複盤項目）');
       }
 
       else if(action === 'clear-recounts'){
@@ -4903,6 +5028,25 @@ function bindEvents(){
         }
         await deleteManagerRemote(delMgrName);
         showToast("已移除主管「"+delMgrName+"」");
+        render();
+      }
+
+      else if(action === 'add-keyin'){
+        var kiSelect = document.getElementById('new-keyin-name');
+        var kiName = kiSelect ? kiSelect.value : "";
+        if(!kiName){ showToast("請選擇要加為 key in 人員的人"); return; }
+        await addKeyinUserRemote(kiName);
+        showToast("已將「"+kiName+"」設為 key in 人員");
+        render();
+      }
+
+      else if(action === 'delete-keyin'){
+        var delKiName = el.getAttribute('data-name');
+        if(!confirm('確定要移除 key in 人員「'+delKiName+'」嗎？\n\n只會移除 key in 身分，這個人還是會留在人員名單裡。')){
+          return;
+        }
+        await deleteKeyinUserRemote(delKiName);
+        showToast("已移除 key in 人員「"+delKiName+"」");
         render();
       }
 
