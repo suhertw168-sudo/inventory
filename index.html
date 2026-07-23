@@ -53,6 +53,13 @@
     font-weight:600;
   }
   .icon-btn:active{ background:#ece7dd; }
+  /* 更新按鈕按下後的轉圈動畫：跟按鈕文字同一行內顯示，比純文字「更新中…」更明顯是進行中，不是卡住 */
+  .btn-spinner{
+    display:inline-block; width:11px; height:11px; margin-right:5px; vertical-align:-2px;
+    border:2px solid rgba(0,0,0,.15); border-top-color:var(--accent); border-radius:50%;
+    animation:btnspin .7s linear infinite;
+  }
+  @keyframes btnspin{ to{ transform:rotate(360deg); } }
   .progress-wrap{ margin-top:10px; }
   .progress-bar{
     height:6px; background:#e9e3d6; border-radius:4px; overflow:hidden;
@@ -485,10 +492,10 @@
     font-size:12px; font-weight:700; padding:3px 10px; border-radius:12px;
     background:#fdecea; color:#c0392b; white-space:nowrap; flex:0 0 auto;
   }
-  /* 主管視角下這裡會同時擠進指派徽章、第二輪標籤、狀態小標籤、取消複盤按鈕，容易比一般成員視角寬很多，
+  /* 主管視角下這裡會同時擠進指派徽章、第二輪標籤、狀態小標籤，容易比一般成員視角寬很多，
      這裡讓 hdr-right 自己允許換行、靠右對齊，避免整排被撐開而讓按鈕或文字超出卡片邊框 */
   .recount-item .hdr-right{ flex-wrap:wrap; justify-content:flex-end; row-gap:6px; }
-  /* 上面四個徽章／按鈕原本是 white-space:nowrap + 不可縮小，多語系名字一長、或手機螢幕一窄，
+  /* 上面幾個徽章／按鈕原本是 white-space:nowrap + 不可縮小，多語系名字一長、或手機螢幕一窄，
      單一元素自己就比卡片寬，光靠 hdr-right 換行救不了——這裡讓它們允許自己內部換行＋可縮小，
      文字短的時候外觀完全不變(還是一行)，只有真的太長才會在自己的圓角框內換行，不會撐出邊框 */
   .recount-item .hdr-right .ri-assignee,
@@ -531,6 +538,11 @@
     margin-top:12px; padding:8px 12px;
     background:#e8f5ec; color:#2f7a3e; border-radius:8px;
     font-size:13px; font-weight:700; text-align:center;
+  }
+  /* 已完結格子被主管修正過(見 r.corrected)的稽核標記，跟第二輪標籤同一套警示色系，一眼看出「這格數字動過」 */
+  .recount-item .ri-corrected-tag{
+    display:inline-block; margin-left:6px; padding:2px 8px; border-radius:10px;
+    background:#fdecea; color:#c0392b; font-size:12px; font-weight:700;
   }
   .recount-item .ri-fields{
     display:grid; grid-template-columns:1fr 1fr; gap:10px;
@@ -734,6 +746,11 @@ var APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwmO5IsfDIufHan6Y
 
 // 管理員密碼（按右上角「管理用設定」時會詢問）。需要修改密碼時，直接改這一行的引號內文字即可
 var ADMIN_PASSWORD = "6666";
+
+// 第二輪複盤／品牌負責人功能總開關：關閉時只隱藏「開新一輪」的入口跟「品牌負責人」設定面板，
+// 不刪除任何程式碼或資料——既有的第二輪資料照樣能被主管填完、回寫收尾（唯讀的意思是一般成員
+// 仍被鎖住不能填，不是連主管都不能收尾）。改回 true 立即全數恢復。
+var ENABLE_SECOND_ROUND = false;
 
 var state = {
   structure: null,
@@ -1132,13 +1149,13 @@ function isManager(){
   if(!current) return false;
   return (state.managers || []).indexOf(current) !== -1;
 }
-// 目前這台手機「看得到」的複盤格子 key 清單：主管預設看全部，但「已定案」(第二輪或之後確認完成，
-// 不能再開下一輪)的格子預設濾掉，避免清單一直堆積已經結束的格子——開啟 state.showFinalizedRecounts
-// 開關(複盤清單頁「顯示已定案」)才會列出來供查閱，這批本來就是唯讀狀態，不受這個開關影響顯示樣式。
+// 目前這台手機「看得到」的複盤格子 key 清單：主管預設看全部，但「已完結」(已回寫或已定案，
+// 兩種都是 r.confirmed=true)的格子預設濾掉，避免清單一直堆積已經結束的格子——開啟
+// state.showFinalizedRecounts 開關(複盤清單頁「顯示已完結」)才會列出來供查閱／主管修正回寫。
 // 非主管看得到的分兩種——第一輪格子看「指派給自己」的；第二輪格子(isSecondRoundRecount)不走指派，
 // 直接看「自己是不是這格品牌的負責人之一」，等同「自動被指派」的效果，不用主管手動再派一次。
 // 不管哪一種，只要這格「已經確認回寫過」(r.confirmed)，複盤人視角就立刻退場，不用等 key in 開
-// 第二輪才消失——這一條同時涵蓋「已確認」(第一輪定案)跟「已定案」(第二輪或之後定案)兩種已完結狀態，
+// 第二輪才消失——這一條同時涵蓋「已回寫」(第一輪確認)跟「已定案」(第二輪或之後定案)兩種已完結狀態，
 // 事情做完的格子就該從相關人的清單移除。
 // 這是唯一的過濾點——複盤清單、款式進度總覽、首頁徽章數字、背景同步的「清單有變動」比對都共用這份邏輯，
 // 不在各處各自重複判斷，也確保「指派資料同步回來後，變動提示橫幅算得出來」（見 syncFromBackend）。
@@ -1148,7 +1165,7 @@ function visibleRecountKeys(){
     if(state.showFinalizedRecounts) return allKeys;
     return allKeys.filter(function(k){
       var r = state.recounts[k];
-      return !(r.confirmed && r.everReopened);
+      return !r.confirmed;
     });
   }
   var myName = getRecountUserName();
@@ -1329,7 +1346,10 @@ async function clearRecountsRemote(){
 // parseExpr() 算成數字才送給後端——後端不重新解析算式，直接信任前端算好的結果，跟平常存檔（saveCount）
 // 收到的 shelf/stock 是同一套慣例。樂觀更新同時更新 recounts(已確認狀態)跟 counts(讓「第一次」欄位、
 // 差異立刻反映新值)，失敗就兩個都還原。
-async function confirmRecountRemote(style, color, size){
+// isCorrection：這格「已經回寫過」還再呼叫一次，代表是主管在複盤清單修正錯誤數字(見
+// buildRecountConfirmSectionHtml 的修正按鈕)，帶給後端讓 confirmRecount() 放行重複確認的擋修，
+// 並在複盤分頁標記「已修正」欄位留稽核痕跡；不是修正流程就照舊不帶(undefined 等同 false)。
+async function confirmRecountRemote(style, color, size, isCorrection){
   var key = keyFor(style, color, size);
   var r = state.recounts[key];
   if(!r) return;
@@ -1349,11 +1369,12 @@ async function confirmRecountRemote(style, color, size){
   var beforeCountedBy = (prevCount && prevCount.countedBy) ? prevCount.countedBy : "";
   state.recounts[key] = Object.assign({}, r, {
     confirmed: true, confirmedBy: confirmedBy, confirmedAt: new Date().toISOString(),
-    beforeShelf: beforeShelf, beforeStock: beforeStock, beforeCountedBy: beforeCountedBy
+    beforeShelf: beforeShelf, beforeStock: beforeStock, beforeCountedBy: beforeCountedBy,
+    corrected: !!isCorrection
   });
   state.counts[key] = { shelf: shelfVal, stock: stockVal, total: shelfVal + stockVal, countedBy: confirmedBy };
   try{
-    await apiPost({ action:"confirmRecount", style:style, color:color, size:size, shelf:shelfVal, stock:stockVal, confirmedBy:confirmedBy });
+    await apiPost({ action:"confirmRecount", style:style, color:color, size:size, shelf:shelfVal, stock:stockVal, confirmedBy:confirmedBy, isCorrection: !!isCorrection });
   }catch(e){
     console.error("confirm recount failed", e);
     state.recounts[key] = prevRecount;
@@ -2637,6 +2658,9 @@ function renderSetup(){
           '<button class="btn" data-action="add-manager">設為主管</button>'
         : '<p class="sub" style="margin-top:14px;">'+(state.people.length === 0 ? '請先在上面「人員名單管理」新增人員，才能挑人設為主管。' : '人員名單裡的人都已經是主管了。')+'</p>')+
     '</div>'+
+    // 第二輪功能關閉時整面隱藏品牌負責人設定：只藏入口，state.brandOwners 資料本身不動，
+    // 之後改回 ENABLE_SECOND_ROUND=true 這個面板會原樣恢復。
+    (ENABLE_SECOND_ROUND ?
     '<div class="panel">'+
       '<h2>品牌負責人</h2>'+
       '<p class="sub">每個品牌最多設定兩位負責人。複盤進入第二輪時，指派頁會標示這個品牌的負責人，指派給非負責人時會提醒一次（不強制鎖，主管仍可指派給別人）。選單選「（不設定）」再按設定，等於清空那個位置。</p>'+
@@ -2659,7 +2683,7 @@ function renderSetup(){
               '<select id="brand-owner-name-2">'+brandOwnerPeopleOptions+'</select>'+
             '</div>'+
             '<button class="btn secondary" data-action="set-brand-owner" data-slot="2">設定第二位</button>')+
-    '</div>'+
+    '</div>' : '')+
     '<div class="panel">'+
       '<h2>整理原始資料（加快開啟速度）</h2>'+
       '<p class="sub">每次填寫架上/庫存都會新增一行記錄，用越久資料筆數越多。按這個會清掉每個格位重複的舊記錄，只保留最新一筆，盤點數字不會變、只是表格變小、開啟速度變快。建議每隔一段時間（例如每天結束時）按一次。</p>'+
@@ -2893,9 +2917,10 @@ function renderSummary(){
           ? '<td class="num">'+stock+'</td>'
           : '<td class="num" style="color:#e87a3e; font-weight:700;">未填</td>';
         // 複盤標記欄：要不要複盤是 key in 人員依 ERP 比對在這裡決定的，所以標記/取消/再標記都在這裡做。
-        // 四種狀態：未標記(標記)／已標記未確認(已標記，點了取消)／已確認(第一輪確認，點了開啟第二輪)／
-        // 已定案(第二輪或之後確認過，不能再點開下一輪——複盤頁主管仍保留例外處理的「取消複盤」後路)。
-        // 已確認的格子不再能從這裡整筆刪除——真的要刪掉已確認紀錄的例外情況，改到複盤頁給主管處理。
+        // 四種狀態：未標記(標記)／已標記未確認(已標記，點了取消)／已確認(第一輪確認，點了開啟第二輪，
+        // 第二輪功能關閉中則變成不可點的純標籤，見 ENABLE_SECOND_ROUND)／已定案(第二輪或之後確認過，
+        // 不能再點開下一輪)。已確認的格子不再能從這裡整筆刪除——真的要修正已回寫錯誤的數字，
+        // 改到複盤頁「顯示已完結」清單裡讓主管修正回寫（見 buildRecountConfirmSectionHtml）。
         var recountR = state.recounts[key];
         var isMarked = !!recountR;
         var recountCell;
@@ -2916,6 +2941,9 @@ function renderSummary(){
           var markToggleBtnHtml;
           if(recountR.confirmed && recountR.everReopened){
             markToggleBtnHtml = '<span class="mini-btn locked-final" title="第二輪(或之後)確認回寫的最終定案，不能再開下一輪">已定案</span>';
+          } else if(recountR.confirmed && !ENABLE_SECOND_ROUND){
+            // 第二輪功能關閉中：這裡只變成不可點的純標籤，不開放再開下一輪(見 ENABLE_SECOND_ROUND)
+            markToggleBtnHtml = '<span class="mini-btn marked" title="第二輪複盤功能目前關閉中" style="cursor:default;">已複盤</span>';
           } else if(recountR.confirmed){
             markToggleBtnHtml = '<button class="mini-btn marked" data-action="remark-recount-next-round" data-style="'+escapeHtml(st.style)+'" data-color="'+escapeHtml(col.name)+'" data-size="'+escapeHtml(sz)+'">已複盤</button>';
           } else {
@@ -3815,10 +3843,8 @@ function renderRecount(){
     // 已確認的格子改顯示狀態；沒有編輯權限(第二輪的非負責人)一律不顯示按鈕
     var confirmSectionHtml = buildRecountConfirmSectionHtml(r, style, color, size, recountVal, editable);
 
-    // 取消複盤的入口權責在彙總明細（key in 人員依 ERP 比對決定要不要複盤），複盤清單這裡只留給主管當例外處理的後路
-    var unmarkBtnHtml = manager
-      ? '<button class="mini-btn" data-action="unmark-recount-confirm" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'" style="border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep);">取消複盤</button>'
-      : '';
+    // 取消複盤的入口權責在彙總明細（key in 人員依 ERP 比對決定要不要複盤）。複盤清單頁不再提供主管
+    // 「取消複盤」的例外後路——要修正已回寫錯誤的數字改走下面的「完成回寫」修正流程，不是整筆刪除。
 
     // 第二輪標籤：曾經確認回寫過(有快照)，現在又還沒確認，代表這格被重新標記進入下一輪
     var secondRoundTagHtml = secondRoundNow ? '<span class="ri-second-round-tag">⚠ 第二輪複盤</span>' : '';
@@ -3865,7 +3891,6 @@ function renderRecount(){
           assignBadgeHtml+
           secondRoundTagHtml+
           '<span class="ri-assignee'+(badge.cls?' '+badge.cls:'')+'">'+escapeHtml(badge.text)+'</span>'+
-          unmarkBtnHtml+
         '</div>'+
       '</div>'+
       '<div class="ri-nums">'+
@@ -4002,7 +4027,7 @@ function renderRecount(){
       '<span style="color:var(--muted); min-width:0; overflow-wrap:break-word;">你的盤點身分：<strong style="color:var(--ink);">'+(getRecountUserName() ? escapeHtml(getRecountUserName()) : '尚未設定')+'</strong></span>'+
       '<div style="display:flex; flex-wrap:wrap; gap:6px;">'+
         (manager ? '<button class="mini-btn" data-action="recount-assign">複盤分配</button>' : '')+
-        (manager ? '<button class="mini-btn'+(state.showFinalizedRecounts?' marked':'')+'" data-action="toggle-show-finalized" title="已定案的格子不能再開下一輪，預設不列出，開啟後可查閱(唯讀)">'+(state.showFinalizedRecounts?'✓ 顯示已定案':'顯示已定案')+'</button>' : '')+
+        (manager ? '<button class="mini-btn'+(state.showFinalizedRecounts?' marked':'')+'" data-action="toggle-show-finalized" title="已完結(已回寫／已定案)的格子預設不列出，開啟後可查閱，也可以在這裡修正回寫錯誤的數字">'+(state.showFinalizedRecounts?'✓ 顯示已完結':'顯示已完結')+'</button>' : '')+
         '<button class="mini-btn" data-action="change-recount-username">'+(getRecountUserName() ? '改名字' : '設定名字')+'</button>'+
       '</div>'+
     '</div>'+
@@ -4287,7 +4312,24 @@ function formatConfirmedAt(iso){
 function buildRecountConfirmSectionHtml(r, style, color, size, recountVal, editable){
   if(r.confirmed){
     var confirmedAtText = r.confirmedAt ? formatConfirmedAt(r.confirmedAt) : "";
-    return '<div class="ri-confirmed-status">✓ 已確認（'+escapeHtml(r.confirmedBy || "")+(confirmedAtText ? '，'+confirmedAtText : '')+'）</div>';
+    var html = '<div class="ri-confirmed-status">已回寫（'+escapeHtml(r.confirmedBy || "")+(confirmedAtText ? '，'+confirmedAtText : '')+'）'+
+      (r.corrected ? ' <span class="ri-corrected-tag">⚙已修正</span>' : '')+'</div>';
+    // 主管修正：已完結格子的架上/庫存輸入框對主管開放編輯(見 canEditRecountKey，主管一律 true)，
+    // 這裡比對「目前輸入框算出來的值」跟「目前彙總(state.counts)現值」，不同才代表主管真的改動過
+    // 數字，補上「完成回寫」按鈕讓主管再走一次 confirmRecount(帶 isCorrection)；不用另外存一個
+    // 「有沒有改過」的狀態，數字改回原值按鈕就自動消失，跟原本未確認時「兩格填完才出現按鈕」同一套精神。
+    if(isManager() && editable !== false && recountVal !== null){
+      var cnt = state.counts[keyFor(style, color, size)];
+      var confirmedShelf = (cnt && cnt.shelf !== "" && cnt.shelf !== null && cnt.shelf !== undefined) ? Number(cnt.shelf) : null;
+      var confirmedStock = (cnt && cnt.stock !== "" && cnt.stock !== null && cnt.stock !== undefined) ? Number(cnt.stock) : null;
+      var curShelf = parseExpr(String(r.shelf || ""));
+      var curStock = parseExpr(String(r.stock || ""));
+      var changed = !(curShelf === confirmedShelf && curStock === confirmedStock);
+      if(changed){
+        html += '<button class="btn secondary ri-confirm-btn" data-action="confirm-recount" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'">完成回寫（更新彙總）</button>';
+      }
+    }
+    return html;
   } else if(recountVal !== null && editable !== false){
     return '<button class="btn secondary ri-confirm-btn" data-action="confirm-recount" data-style="'+escapeHtml(style)+'" data-color="'+escapeHtml(color)+'" data-size="'+escapeHtml(size)+'">完成回寫（更新彙總）</button>';
   }
@@ -4320,12 +4362,12 @@ function bindEvents(){
       else if(action === 'manual-sync'){
         var statusEl = document.getElementById('sync-status');
         if(statusEl) statusEl.textContent = "🔄 同步中...";
-        // 按下瞬間先給視覺回饋：文字換成「更新中…」+ disabled 防連點。成功的話下面會整頁 render()，
-        // 按鈕本身會被換成全新節點，這裡的還原動作作用在已經丟棄的舊節點上、沒有副作用；
+        // 按下瞬間先給視覺回饋：文字換成「更新中…」+ 轉圈 spinner + disabled 防連點。成功的話下面會整頁
+        // render()，按鈕本身會被換成全新節點，這裡的還原動作作用在已經丟棄的舊節點上、沒有副作用；
         // 失敗的話 finally 負責把文字/狀態還原，不會卡死在「更新中…」。
         var syncBtnText = el.textContent;
         el.disabled = true;
-        el.textContent = "更新中…";
+        el.innerHTML = '<span class="btn-spinner"></span>更新中…';
         try{
           await syncFromBackend();
           // 首頁不能只靠 syncFromBackend() 內部的 hasChange 判斷要不要重畫——使用者主動點更新，
@@ -4547,8 +4589,9 @@ function bindEvents(){
       }
 
       else if(action === 'remark-recount-next-round'){
-        // 彙總明細的「已複盤」按鈕：不是取消，是開啟第二輪——上一輪的確認紀錄會保留，
-        // 真的要整筆刪掉已確認紀錄的例外情況，改到複盤頁給主管處理（unmark-recount-confirm）
+        // 彙總明細的「已複盤」按鈕：不是取消，是開啟第二輪——上一輪的確認紀錄會保留。
+        // 真的要整筆刪掉已確認紀錄的例外情況，目前沒有入口（複盤清單頁的「取消複盤」已移除，
+        // 取消標記的權責統一收回彙總明細的「已標記→取消」）。
         var rmStyle = el.getAttribute('data-style');
         var rmColor = el.getAttribute('data-color');
         var rmSize = el.getAttribute('data-size');
@@ -4557,20 +4600,6 @@ function bindEvents(){
         }
         await remarkRecountForNextRoundRemote(rmStyle, rmColor, rmSize);
         showToast('已開始新一輪複盤');
-        render_keepExpanded();
-      }
-
-      else if(action === 'unmark-recount-confirm'){
-        // 複盤清單頁的「取消複盤」按鈕：只有主管看得到(當作例外處理的後路)，一般成員不該在這裡取消
-        // ——要不要複盤是 key in 人員在彙總明細依 ERP 比對決定的。需要二次確認避免手滑誤按。
-        var ucStyle = el.getAttribute('data-style');
-        var ucColor = el.getAttribute('data-color');
-        var ucSize = el.getAttribute('data-size');
-        if(!confirm(buildUnmarkRecountConfirmMessage(ucStyle, ucColor, ucSize))){
-          return;
-        }
-        unmarkRecountRemote(ucStyle, ucColor, ucSize);
-        showToast('已移出複盤清單');
         render_keepExpanded();
       }
 
@@ -4591,12 +4620,19 @@ function bindEvents(){
         var cfC = state.counts[cfKey];
         var cfFirstShelfText = (cfC && cfC.shelf !== "" && cfC.shelf !== null && cfC.shelf !== undefined) ? cfC.shelf : "—";
         var cfFirstStockText = (cfC && cfC.stock !== "" && cfC.stock !== null && cfC.stock !== undefined) ? cfC.stock : "—";
-        if(!confirm('將以複盤數字（架上'+cfShelfVal+'／庫存'+cfStockVal+'）更新彙總，原初盤（架上'+cfFirstShelfText+'／庫存'+cfFirstStockText+'）將被取代。\n\n回寫後此項目將從您的清單移除，請確認數字無誤。\n\n確定要確認嗎？')){
+        // 這格已經回寫過(r.confirmed)還按得到這顆鈕，代表是主管的修正流程(見 buildRecountConfirmSectionHtml
+        // 的「數字改動才出現按鈕」判斷)，走同一個 confirm-recount 入口，只是確認文案跟帶給後端的
+        // isCorrection 旗標不同，不另造新的回寫路徑。
+        var cfIsCorrection = !!cfR.confirmed;
+        var cfConfirmMsg = cfIsCorrection
+          ? '將以修正數字重新回寫彙總（架上'+cfShelfVal+'／庫存'+cfStockVal+'，原回寫：架上'+cfFirstShelfText+'／庫存'+cfFirstStockText+'）。\n\n請確認數字無誤。\n\n確定要修正回寫嗎？'
+          : '將以複盤數字（架上'+cfShelfVal+'／庫存'+cfStockVal+'）更新彙總，原初盤（架上'+cfFirstShelfText+'／庫存'+cfFirstStockText+'）將被取代。\n\n回寫後此項目將從您的清單移除，請確認數字無誤。\n\n確定要確認嗎？';
+        if(!confirm(cfConfirmMsg)){
           return;
         }
         try{
-          await confirmRecountRemote(cfStyle, cfColor, cfSize);
-          showToast('已確認並更新彙總');
+          await confirmRecountRemote(cfStyle, cfColor, cfSize, cfIsCorrection);
+          showToast(cfIsCorrection ? '已修正回寫並更新彙總' : '已確認並更新彙總');
         }catch(e){
           // confirmRecountRemote 內部已經還原樂觀更新並顯示錯誤 toast，這裡不用重複處理
         }
@@ -4630,12 +4666,12 @@ function bindEvents(){
       }
 
       else if(action === 'manual-sync-recount'){
-        // 按下瞬間先給視覺回饋，理由同首頁「立即更新」：文字換成「更新中…」+ disabled 防連點，
-        // 成功會整頁 render() 把按鈕換成全新節點(這裡的還原對已丟棄的舊節點無副作用)，
+        // 按下瞬間先給視覺回饋，理由同首頁「立即更新」：文字換成「更新中…」+ 轉圈 spinner + disabled
+        // 防連點，成功會整頁 render() 把按鈕換成全新節點(這裡的還原對已丟棄的舊節點無副作用)，
         // 失敗則靠 finally 把按鈕還原，不會卡住。
         var syncBtnText = el.textContent;
         el.disabled = true;
-        el.textContent = '更新中…';
+        el.innerHTML = '<span class="btn-spinner"></span>更新中…';
         try{
           await syncFromBackend();
           render();
