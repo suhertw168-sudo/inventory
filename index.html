@@ -544,6 +544,11 @@
     display:inline-block; margin-left:6px; padding:2px 8px; border-radius:10px;
     background:#fdecea; color:#c0392b; font-size:12px; font-weight:700;
   }
+  /* 修正過的格子雙行呈現：外框沿用 .ri-confirmed-status 既有底色，這裡只調整成靠左對齊(單行版本
+     置中比較好看，雙行置中反而不好讀)，兩行之間留一點距離 */
+  .recount-item .ri-confirmed-status-corrected{ text-align:left; }
+  .recount-item .ri-confirmed-line{ line-height:1.5; }
+  .recount-item .ri-confirmed-line + .ri-confirmed-line{ margin-top:2px; }
   .recount-item .ri-fields{
     display:grid; grid-template-columns:1fr 1fr; gap:10px;
     margin-top:12px; padding-top:12px; border-top:1px solid var(--line);
@@ -1039,12 +1044,23 @@ function closeRecountNoteModal(){
 // 狀態後面附的人名來源分兩種：「填了數字的人」用 r.assignee（已填寫待回寫／已回寫／已定案）；
 // 「誰該負責這格」用 recountResponsibleNames()（未盤／第二輪處理中）——沿用複盤清單既有的
 // 歸屬判斷（第一輪看指派紀錄、第二輪看品牌負責人），不另寫一套。
+// 已回寫/已定案且被主管修正過(r.corrected)是例外：主管改動架上/庫存數字時，r.assignee 會被
+// 覆蓋成主管本人（見 saveRecountValueRemote，誰存的數字就記誰），這裡如果還顯示 assignee 會把
+// 最初真正回寫的人洗掉，所以改用「已回寫(原OO/修XX)」——OO/XX 讀跟複盤清單卡片同一組欄位
+// (originalConfirmedBy/confirmedBy)，判定邏輯完全共用，不另寫一套。
 function computeRecountCellStatusText(key){
   var r = state.recounts[key];
   if(!r) return "";
   var assignee = String(r.assignee || "").trim();
-  if(r.confirmed && r.everReopened) return "已定案" + (assignee ? "("+assignee+")" : "");
-  if(r.confirmed) return "已回寫" + (assignee ? "("+assignee+")" : "");
+  if(r.confirmed){
+    var statusWord = r.everReopened ? "已定案" : "已回寫";
+    if(r.corrected){
+      var origBy = String(r.originalConfirmedBy || "").trim() || "—";
+      var curBy = String(r.confirmedBy || "").trim() || "—";
+      return statusWord + "(原"+origBy+"/修"+curBy+")";
+    }
+    return statusWord + (assignee ? "("+assignee+")" : "");
+  }
   if(isSecondRoundRecount(r)){
     var owners = recountResponsibleNames(key);
     return owners.length ? ("第二輪處理中(負責人:"+owners.join("、")+")") : "第二輪處理中";
@@ -1386,10 +1402,18 @@ async function confirmRecountRemote(style, color, size, isCorrection){
   var beforeShelf = (prevCount && prevCount.shelf !== "" && prevCount.shelf !== null && prevCount.shelf !== undefined) ? prevCount.shelf : "";
   var beforeStock = (prevCount && prevCount.stock !== "" && prevCount.stock !== null && prevCount.stock !== undefined) ? prevCount.stock : "";
   var beforeCountedBy = (prevCount && prevCount.countedBy) ? prevCount.countedBy : "";
+  // 原回寫人/原回寫時間快照：只在「這一格第一次被修正」才需要存(r.originalConfirmedBy 還空的時候)，
+  // 存的是這次即將被覆蓋掉的 confirmedBy/confirmedAt(也就是上一次真正回寫的人/時間)，之後不管修正
+  // 幾次都不再覆蓋——跟後端 confirmRecount() 的 Y,Z 欄快照邏輯一致，這裡是樂觀更新版本，讓主管按下
+  // 修正回寫的當下畫面就能立刻呈現雙行，不用等下次同步。
+  var hasOrigSnapshot = r.originalConfirmedBy !== undefined && r.originalConfirmedBy !== null && r.originalConfirmedBy !== "";
+  var originalConfirmedBy = hasOrigSnapshot ? r.originalConfirmedBy : (isCorrection ? (r.confirmedBy || "") : (r.originalConfirmedBy || ""));
+  var originalConfirmedAt = hasOrigSnapshot ? r.originalConfirmedAt : (isCorrection ? (r.confirmedAt || "") : (r.originalConfirmedAt || ""));
   state.recounts[key] = Object.assign({}, r, {
     confirmed: true, confirmedBy: confirmedBy, confirmedAt: new Date().toISOString(),
     beforeShelf: beforeShelf, beforeStock: beforeStock, beforeCountedBy: beforeCountedBy,
-    corrected: !!isCorrection
+    corrected: !!isCorrection,
+    originalConfirmedBy: originalConfirmedBy, originalConfirmedAt: originalConfirmedAt
   });
   state.counts[key] = { shelf: shelfVal, stock: stockVal, total: shelfVal + stockVal, countedBy: confirmedBy };
   try{
@@ -1668,7 +1692,7 @@ function normalizeCounts(counts){
 // 複盤任務的文字欄位一律強制轉成字串型別，避免 Google Sheet 把某格內容存成 number
 // （例如身分名字剛好打成純數字）時，前端對這些欄位做 .trim()/.toLowerCase() 直接炸掉整頁。
 // 數字格位（架上複盤/庫存複盤）維持原樣，使用處本來就會另外用 String()/parseExpr 處理。
-var RECOUNT_TEXT_FIELDS = ["note","assignee","editingBy","lastEditBy","confirmedBy","relogBy","beforeCountedBy","veryFirstCountedBy"];
+var RECOUNT_TEXT_FIELDS = ["note","assignee","editingBy","lastEditBy","confirmedBy","relogBy","beforeCountedBy","veryFirstCountedBy","originalConfirmedBy"];
 function normalizeRecounts(recounts){
   if(!recounts || typeof recounts !== 'object') return recounts || {};
   var out = {};
@@ -4408,8 +4432,19 @@ function formatConfirmedAt(iso){
 function buildRecountConfirmSectionHtml(r, style, color, size, recountVal, editable){
   if(r.confirmed){
     var confirmedAtText = r.confirmedAt ? formatConfirmedAt(r.confirmedAt) : "";
-    var html = '<div class="ri-confirmed-status">已回寫（'+escapeHtml(r.confirmedBy || "")+(confirmedAtText ? '，'+confirmedAtText : '')+'）'+
-      (r.corrected ? ' <span class="ri-corrected-tag">⚙已修正</span>' : '')+'</div>';
+    var html;
+    if(r.corrected){
+      // 修正過的格子：雙行呈現，第一行是最原始的複盤回寫紀錄(讀 Y,Z 欄快照，永遠不再變動)，
+      // 第二行是現行 confirmedBy/confirmedAt(最新一次修正)，兩段歷史都留著，不會因為修正
+      // 覆蓋掉原本回寫人是誰。
+      var origAtText = r.originalConfirmedAt ? formatConfirmedAt(r.originalConfirmedAt) : "";
+      html = '<div class="ri-confirmed-status ri-confirmed-status-corrected">'+
+        '<div class="ri-confirmed-line">複盤回寫：'+escapeHtml(r.originalConfirmedBy || "")+(origAtText ? '（'+origAtText+'）' : '')+'</div>'+
+        '<div class="ri-confirmed-line">主管修正：'+escapeHtml(r.confirmedBy || "")+(confirmedAtText ? '（'+confirmedAtText+'）' : '')+' <span class="ri-corrected-tag">⚙已修正</span></div>'+
+      '</div>';
+    } else {
+      html = '<div class="ri-confirmed-status">已回寫（'+escapeHtml(r.confirmedBy || "")+(confirmedAtText ? '，'+confirmedAtText : '')+'）</div>';
+    }
     // 主管修正：已完結格子的架上/庫存輸入框對主管開放編輯(見 canEditRecountKey，主管一律 true)，
     // 這裡比對「目前輸入框算出來的值」跟「目前彙總(state.counts)現值」，不同才代表主管真的改動過
     // 數字，補上「完成回寫」按鈕讓主管再走一次 confirmRecount(帶 isCorrection)；不用另外存一個
