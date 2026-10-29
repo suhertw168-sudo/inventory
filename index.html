@@ -1860,6 +1860,7 @@ async function init(){
   state.view = "home";
   render();
   startAutoSync(); // 啟動背景自動同步
+  loadErpMaps();   // 背景讀取 ERP 對照表，不等待
 }
 
 // 自動同步：每 SYNC_INTERVAL_MS 毫秒去後端拉一次最新資料，更新其他人填的數字到本地畫面
@@ -3267,7 +3268,8 @@ function renderSummary(){
   '<main>'+
     '<div class="panel">'+
       '<h2>匯出 ERP 匯入格式（品號／數量／倉別）</h2>'+
-      '<p class="sub">選一個款式，匯出成 ERP 可匯入的格式。品號會自動組成（如 101-01#XS），數量用第一次盤點的架上+庫存加總，倉別依款式自動帶入（AG1000/2000/3000、TH 系列為 A02，其餘 A01）。只匯出有盤過的格。</p>'+
+      '<p class="sub">選一個款式，匯出成 ERP 可匯入的格式。品號會自動組成（如 101-01#XS），數量用第一次盤點的架上+庫存加總，倉別依款式自動帶入。只匯出有盤過的格。</p>'+
+      '<p class="sub" id="erp-source" style="margin-top:-4px;">'+erpSourceHtml()+'</p>'+
       '<div class="field">'+
         '<label>選擇款式</label>'+
         '<select id="erp-export-style">'+erpStyleOptions+'</select>'+
@@ -4274,6 +4276,7 @@ var ERP_SIZE_MAP = {
   "#6": "6 (120cm)",
   "#8": "8 (130cm)",
   "#10": "10 (140cm)",
+  "JXS": "JXS (110cm)",
   "JS": "JS (120cm)",
   "JM": "JM (130cm)",
   "JL": "JL (140cm)",
@@ -4331,6 +4334,14 @@ var ERP_RULE_DEFAULTS = { styleNumber:"asis", colorWidth:2, warehouse:"A01", col
 
 // 依款式名稱找出對應的規則列（缺的欄位補上預設值；完全找不到就回傳純預設值）
 function resolveErpRule(style){
+  var res = findErpRule(style);
+  // 有從 Google Sheet 讀到顏色對照時，色號對照一律以 Sheet 為準（依款式名稱精確比對）
+  if(ERP_SHEET_COLORS !== null){
+    res.colorMap = ERP_SHEET_COLORS[String(style)] || null;
+  }
+  return res;
+}
+function findErpRule(style){
   var s = String(style);
   for(var i=0;i<ERP_BRAND_RULES.length;i++){
     var r = ERP_BRAND_RULES[i];
@@ -4341,6 +4352,59 @@ function resolveErpRule(style){
     if(r2.match.prefix && r2.match.prefix.test(s)) return mergeErpRule(r2);
   }
   return mergeErpRule({});
+}
+
+// ---------- 從 Google Sheet 讀取 ERP 對照表 ----------
+// 後端（v35 起）有 ERP_款式規則／ERP_顏色對照／ERP_尺寸對照 三個可見分頁，以 Sheet 內容取代上面的內建規則。
+// 任一分頁讀不到或是空的，那一部分就繼續用內建規則，確保匯出不會壞。
+// 開啟工具時在背景讀一次；每次按「匯出 ERP」前會再讀一次，所以 Sheet 改完不用重新整理就會套用。
+var ERP_SOURCE = "內建";
+var ERP_SHEET_COLORS = null; // {款式: {工具色號: ERP色號}}
+var ERP_STYLE_NUMBER_NAMES = {"原樣":"asis","只留數字":"digitsOnly","橫線換底線":"dashToUnderscore","開頭後加底線":"insertUnderscoreAfterPrefix"};
+
+function erpEscapeRe(str){
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function sheetRuleToErpRule(r){
+  var match;
+  if(r.matchType === "精確"){
+    match = { styles: String(r.matchValue).split(/[、,，\s]+/).filter(function(x){ return x !== ""; }) };
+  } else {
+    match = { prefix: new RegExp("^" + erpEscapeRe(r.matchValue), "i") };
+  }
+  var w = parseInt(r.colorWidth, 10);
+  return {
+    name: r.name || r.matchValue,
+    match: match,
+    styleNumber: ERP_STYLE_NUMBER_NAMES[r.styleNumber] || "asis",
+    colorWidth: (w > 0 ? w : undefined),
+    warehouse: r.warehouse || undefined
+  };
+}
+function applyErpFromBackend(erp){
+  if(!erp) return;
+  var used = false;
+  if(Array.isArray(erp.rules) && erp.rules.length){ ERP_BRAND_RULES = erp.rules.map(sheetRuleToErpRule); used = true; }
+  if(erp.colors && typeof erp.colors === "object" && Object.keys(erp.colors).length){ ERP_SHEET_COLORS = erp.colors; used = true; }
+  if(erp.sizes && typeof erp.sizes === "object" && Object.keys(erp.sizes).length){ ERP_SIZE_MAP = erp.sizes; used = true; }
+  if(used) ERP_SOURCE = "Google Sheet";
+  var el = document.getElementById("erp-source");
+  if(el) el.innerHTML = erpSourceHtml();
+}
+function erpSourceHtml(){
+  return '對照表來源：<strong>'+ERP_SOURCE+'</strong>'+
+    (ERP_SOURCE === "Google Sheet"
+      ? '（可在 Google Sheet 的「ERP_款式規則」「ERP_顏色對照」「ERP_尺寸對照」分頁修改）'
+      : '（使用程式內建規則）');
+}
+async function loadErpMaps(){
+  try{
+    var erp = await apiGet("erp");
+    // 後端還沒更新到 v35 時，"erp" 會被當成一般載入、回傳的資料沒有 rules，這裡就直接略過
+    if(erp && Array.isArray(erp.rules)) applyErpFromBackend(erp);
+  }catch(e){
+    console.warn("ERP 對照表載入失敗，沿用目前規則", e);
+  }
 }
 function mergeErpRule(rule){
   return {
@@ -5301,7 +5365,11 @@ function bindEvents(){
 
       else if(action === 'download-erp'){
         var sel = document.getElementById('erp-export-style');
-        if(sel){ downloadErpWorkbook(sel.value); }
+        if(sel){
+          showToast("讀取最新 ERP 對照表…");
+          await loadErpMaps(); // 確保用的是 Google Sheet 上最新的對照表
+          downloadErpWorkbook(sel.value);
+        }
       }
 
       else if(action === 'toggle-brand-group'){
