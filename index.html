@@ -1882,6 +1882,53 @@ function hiddenSummaryText(style){
   return parts.join('、');
 }
 
+// ---------- 單一款式編輯（新增／刪除顏色與尺寸） ----------
+// 共用流程：先把款式還原成完整清單（含隱藏的顏色與尺寸）→ 交給 mutate 修改 → 重新分離隱藏項目 → 存回後端。
+// mutate(colors) 直接修改傳進來的完整顏色陣列，回傳 false 代表沒有任何變動（不存檔）。
+// 存檔失敗會整個還原成修改前的狀態，畫面不會留下沒存成功的內容。
+async function editStyleContent(style, mutate){
+  var backup = JSON.stringify([state.structure, state.hiddenStash, state.hiddenSizeStash, state.hiddenColors, state.hiddenSizes]);
+  var st = unstashStyleForEdit(style);
+  if(!st) return false;
+  var changed = mutate(st.colors);
+  state.structure = sortStructureByStyle(state.structure);
+  if(changed === false) return false;
+  var ok = await saveStructure(state.structure);
+  if(!ok){
+    var b = JSON.parse(backup);
+    state.structure = b[0]; state.hiddenStash = b[1]; state.hiddenSizeStash = b[2]; state.hiddenColors = b[3]; state.hiddenSizes = b[4];
+  }
+  return ok;
+}
+// 把「一行一個」或用逗號／頓號分隔的文字拆成不重複的清單
+function parseNameList(raw){
+  var out = [];
+  String(raw || "").split(/[\n,，、]+/).forEach(function(x){
+    x = x.trim();
+    if(x && out.indexOf(x) === -1) out.push(x);
+  });
+  return out;
+}
+// 某款式所有顏色用到的尺寸（依出現順序，不重複），給下拉選單用
+function allSizesOfStyle(st){
+  var out = [];
+  fullColorsOfStyle(st).forEach(function(c){
+    c.sizes.forEach(function(z){ if(out.indexOf(z) === -1) out.push(z); });
+  });
+  return out;
+}
+// 某款式某顏色（或整個款式，color 傳 null）已經填過數字的格數
+function countFilledSlots(style, color, size){
+  return Object.keys(state.counts || {}).filter(function(k){
+    var p = k.split("|");
+    if(p[0] !== style) return false;
+    if(color !== null && p[1] !== color) return false;
+    if(size !== undefined && size !== null && p.slice(2).join("|") !== size) return false;
+    var c = state.counts[k];
+    return c && ((c.shelf !== "" && c.shelf !== null && c.shelf !== undefined) || (c.stock !== "" && c.stock !== null && c.stock !== undefined));
+  }).length;
+}
+
 function sortStructureByStyle(structure){
   structure = stashHiddenColors(structure); // 先把隱藏的顏色抽走，見上方「隱藏顏色」說明
   // 改成依 BRAND_ORDER 排序：同品牌的款式聚在一起，沒品牌的放最前面（獨立顯示）
@@ -2860,8 +2907,65 @@ function renderSetup(){
         (hidden ? '<span style="background:#fdf3ef; color:#c45a1e; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">已隱藏</span>' : '')+
       '</div>'+
       '<button class="icon-btn" data-action="toggle-color-hidden" data-style="'+escapeHtml(hideStyle.style)+'" data-color="'+escapeHtml(c.name)+'"'+(hidden ? '' : ' style="color:var(--accent-deep)"')+'>'+(hidden ? '取消隱藏' : '隱藏整色')+'</button>'+
+      '<button class="icon-btn" data-action="delete-color" data-style="'+escapeHtml(hideStyle.style)+'" data-color="'+escapeHtml(c.name)+'" style="color:var(--accent-deep); margin-left:6px;">刪除</button>'+
     '</div>'+sizeChips;
   }).join("");
+  // 「新增顏色／新增尺寸／刪除尺寸」表單用的選單
+  var editFullColors = hideStyle ? fullColorsOfStyle(hideStyle) : [];
+  var editAllSizes = hideStyle ? allSizesOfStyle(hideStyle) : [];
+  var editColorAfterOptions = '<option value="">加在最後面</option>'+editFullColors.map(function(c){
+    return '<option value="'+escapeHtml(c.name)+'">加在「'+escapeHtml(c.name)+'」後面</option>';
+  }).join("");
+  var editTargetColorOptions = '<option value="">全部顏色</option>'+editFullColors.map(function(c){
+    return '<option value="'+escapeHtml(c.name)+'">只有「'+escapeHtml(c.name)+'」</option>';
+  }).join("");
+  var editSizeBeforeOptions = '<option value="">加在最後面</option>'+editAllSizes.map(function(z){
+    return '<option value="'+escapeHtml(z)+'">加在「'+escapeHtml(z)+'」前面</option>';
+  }).join("");
+  var editSizeOptions = editAllSizes.map(function(z){
+    return '<option value="'+escapeHtml(z)+'">'+escapeHtml(z)+'</option>';
+  }).join("");
+  var subHead = function(t){ return '<div style="font-size:14px; font-weight:800; color:var(--ink); margin:22px 0 10px; padding-top:16px; border-top:2px solid var(--line);">'+t+'</div>'; };
+  var editForms = !hideStyle ? '' :
+    subHead('新增顏色到「'+escapeHtml(hideStyle.style)+'」')+
+    '<div class="field">'+
+      '<label>顏色名稱（一次新增多個請每行一個）</label>'+
+      '<textarea id="edit-add-color-names" placeholder="草綠21&#10;太妃糖22" style="min-height:70px;"></textarea>'+
+    '</div>'+
+    '<div class="field">'+
+      '<label>這些顏色的尺寸（每行一個，已自動帶入這個款式目前的尺寸，可以修改）</label>'+
+      '<textarea id="edit-add-color-sizes">'+escapeHtml(editAllSizes.join("\n"))+'</textarea>'+
+    '</div>'+
+    '<div class="field">'+
+      '<label>排列位置</label>'+
+      '<select id="edit-add-color-after">'+editColorAfterOptions+'</select>'+
+    '</div>'+
+    '<button class="btn" data-action="edit-add-color">新增顏色</button>'+
+    subHead('新增尺寸到「'+escapeHtml(hideStyle.style)+'」')+
+    '<div class="field">'+
+      '<label>尺寸名稱（一次新增多個請每行一個）</label>'+
+      '<textarea id="edit-add-size-names" placeholder="6XL" style="min-height:56px;"></textarea>'+
+    '</div>'+
+    '<div class="field">'+
+      '<label>套用到哪些顏色</label>'+
+      '<select id="edit-add-size-target">'+editTargetColorOptions+'</select>'+
+    '</div>'+
+    '<div class="field">'+
+      '<label>排列位置</label>'+
+      '<select id="edit-add-size-before">'+editSizeBeforeOptions+'</select>'+
+    '</div>'+
+    '<button class="btn" data-action="edit-add-size">新增尺寸</button>'+
+    subHead('刪除「'+escapeHtml(hideStyle.style)+'」的尺寸')+
+    '<p class="sub">只是暫時不盤的話，建議用上面的隱藏（點尺寸），之後可以恢復。</p>'+
+    '<div class="field">'+
+      '<label>要刪除的尺寸</label>'+
+      '<select id="edit-del-size-name">'+editSizeOptions+'</select>'+
+    '</div>'+
+    '<div class="field">'+
+      '<label>從哪些顏色刪除</label>'+
+      '<select id="edit-del-size-target">'+editTargetColorOptions+'</select>'+
+    '</div>'+
+    '<button class="btn secondary" data-action="edit-del-size" style="color:var(--accent-deep);border-color:var(--accent-deep)">刪除這個尺寸</button>';
 
   // 為「設定品牌」功能準備款式下拉選單
   var styleOptions = structure.map(function(st){
@@ -2980,13 +3084,15 @@ function renderSetup(){
       '<button class="btn" data-action="set-style-brand">套用品牌設定</button>'+
     '</div>'+
     '<div class="panel" id="hide-color-panel">'+
-      '<h2>隱藏顏色／尺寸</h2>'+
-      '<p class="sub">把暫時不需要盤點的顏色或尺寸隱藏起來。按「隱藏整色」隱藏整個顏色；點顏色底下的尺寸可以只隱藏那個尺寸（<span style="color:#c45a1e; text-decoration:line-through;">劃線</span>代表已隱藏，再點一下取消）。隱藏後不會出現在盤點、進度、彙總與匯出（含 ERP 格式與 Google Sheet 彙總分頁），也就不會再記錄數字。之前填過的數字會保留，取消隱藏就會連同數字原樣恢復。</p>'+
+      '<h2>編輯款式內容（顏色／尺寸）</h2>'+
+      '<p class="sub">選一個款式，直接新增、刪除或隱藏它的顏色與尺寸，不用整個款式刪掉重打，已填的數字也不受影響。</p>'+
+      '<p class="sub"><strong>隱藏</strong>：把暫時不需要盤點的顏色或尺寸隱藏起來。按「隱藏整色」隱藏整個顏色；點顏色底下的尺寸可以只隱藏那個尺寸（<span style="color:#c45a1e; text-decoration:line-through;">劃線</span>代表已隱藏，再點一下取消）。隱藏後不會出現在盤點、進度、彙總與匯出（含 ERP 格式與 Google Sheet 彙總分頁），也就不會再記錄數字。之前填過的數字會保留，取消隱藏就會連同數字原樣恢復。</p>'+
       '<div class="field">'+
         '<label>選擇款式</label>'+
         '<select id="hide-color-style">'+hideStyleOptions+'</select>'+
       '</div>'+
       hideColorRows+
+      editForms+
     '</div>'+
     '<div class="panel">'+
       '<h2>調整品牌顯示順序</h2>'+
@@ -5533,6 +5639,109 @@ function bindEvents(){
           console.error("save brand order failed", e);
           showToast("順序已更新，但儲存到雲端失敗，請檢查網路");
         }
+      }
+
+      else if(action === 'edit-add-color' || action === 'edit-add-size' || action === 'edit-del-size' || action === 'delete-color'){
+        var edStyle = state.hideColorStyle;
+        var edSt = state.structure.find(function(x){ return x.style === edStyle; });
+        if(!edSt) return;
+        var edFull = fullColorsOfStyle(edSt);
+        var edMutate = null, edDoneMsg = "";
+
+        if(action === 'edit-add-color'){
+          var acNames = parseNameList(document.getElementById('edit-add-color-names').value);
+          var acSizes = parseNameList(document.getElementById('edit-add-color-sizes').value);
+          var acAfter = document.getElementById('edit-add-color-after').value;
+          if(acNames.length === 0 || acSizes.length === 0){ showToast("請填入至少一個顏色名稱與一個尺寸"); return; }
+          var acDup = acNames.filter(function(n){ return edFull.some(function(c){ return c.name === n; }); });
+          if(acDup.length){ showToast("「"+acDup.join("、")+"」已經存在（可能是被隱藏了），請改用其他名稱或取消隱藏"); return; }
+          edMutate = function(colors){
+            var at = colors.length;
+            if(acAfter){
+              var ai = colors.findIndex(function(c){ return c.name === acAfter; });
+              if(ai !== -1) at = ai + 1;
+            }
+            acNames.forEach(function(n, i){ colors.splice(at + i, 0, { name: n, sizes: acSizes.slice() }); });
+          };
+          edDoneMsg = "已新增 "+acNames.length+" 個顏色到「"+edStyle+"」";
+        }
+
+        else if(action === 'edit-add-size'){
+          var asNames = parseNameList(document.getElementById('edit-add-size-names').value);
+          var asTarget = document.getElementById('edit-add-size-target').value;
+          var asBefore = document.getElementById('edit-add-size-before').value;
+          if(asNames.length === 0){ showToast("請填入要新增的尺寸"); return; }
+          var asTargets = edFull.filter(function(c){ return !asTarget || c.name === asTarget; });
+          var asWillAdd = 0;
+          asTargets.forEach(function(c){ asNames.forEach(function(z){ if(c.sizes.indexOf(z) === -1) asWillAdd++; }); });
+          if(asWillAdd === 0){ showToast("選到的顏色都已經有「"+asNames.join("、")+"」了"); return; }
+          edMutate = function(colors){
+            colors.forEach(function(c){
+              if(asTarget && c.name !== asTarget) return;
+              var toAdd = asNames.filter(function(z){ return c.sizes.indexOf(z) === -1; });
+              if(!toAdd.length) return;
+              var at = c.sizes.length;
+              if(asBefore){
+                var bi = c.sizes.indexOf(asBefore);
+                if(bi !== -1) at = bi; // 這個顏色沒有那個尺寸就加在最後
+              }
+              toAdd.forEach(function(z, i){ c.sizes.splice(at + i, 0, z); });
+            });
+          };
+          edDoneMsg = "已新增尺寸「"+asNames.join("、")+"」到 "+(asTarget ? "「"+asTarget+"」" : "全部顏色");
+        }
+
+        else if(action === 'edit-del-size'){
+          var dsName = document.getElementById('edit-del-size-name').value;
+          var dsTarget = document.getElementById('edit-del-size-target').value;
+          if(!dsName) return;
+          var dsHit = edFull.filter(function(c){ return (!dsTarget || c.name === dsTarget) && c.sizes.indexOf(dsName) !== -1; });
+          if(dsHit.length === 0){ showToast("選到的顏色沒有「"+dsName+"」這個尺寸"); return; }
+          var dsOnly = dsHit.filter(function(c){ return c.sizes.length <= 1; });
+          if(dsOnly.length){ showToast("「"+dsOnly[0].name+"」只剩這一個尺寸，不能刪；要移除整個顏色請按該顏色的「刪除」"); return; }
+          var dsRecount = dsHit.filter(function(c){ return colorHasRecountTasks(edStyle, c.name, dsName); });
+          if(dsRecount.length){ showToast("「"+dsRecount[0].name+" "+dsName+"」還有複盤任務，請先到複盤清單處理或移除"); return; }
+          var dsFilled = dsHit.reduce(function(n, c){ return n + countFilledSlots(edStyle, c.name, dsName); }, 0);
+          if(!confirm('確定要從「'+edStyle+'」的 '+(dsTarget ? '「'+dsTarget+'」' : dsHit.length+' 個顏色')+' 刪除尺寸「'+dsName+'」嗎？'+(dsFilled ? '\n\n其中 '+dsFilled+' 格已經填過數字，刪除後畫面上會看不到（數字會保留在後端）。' : ''))) return;
+          edMutate = function(colors){
+            colors.forEach(function(c){
+              if(dsTarget && c.name !== dsTarget) return;
+              var di = c.sizes.indexOf(dsName);
+              if(di !== -1) c.sizes.splice(di, 1);
+              // 連同這格的隱藏設定一起清掉，之後再新增同名尺寸才不會一出現就是隱藏的
+              var dsHs = state.hiddenSizes[edStyle];
+              if(dsHs && dsHs[c.name]){ delete dsHs[c.name][dsName]; if(!Object.keys(dsHs[c.name]).length) delete dsHs[c.name]; }
+            });
+          };
+          edDoneMsg = "已刪除尺寸「"+dsName+"」";
+        }
+
+        else if(action === 'delete-color'){
+          var dcColor = el.getAttribute('data-color');
+          if(edFull.length <= 1){ showToast("這是最後一個顏色；要移除整個款式請到上面「目前的款式」按刪除"); return; }
+          var dcVisibleLeft = edSt.colors.filter(function(c){ return c.name !== dcColor; }).length;
+          if(dcVisibleLeft === 0){ showToast("刪掉後這個款式就沒有顯示中的顏色了，請先取消隱藏其他顏色"); return; }
+          if(colorHasRecountTasks(edStyle, dcColor)){ showToast("「"+dcColor+"」還有複盤任務，請先到複盤清單處理或移除"); return; }
+          var dcFilled = countFilledSlots(edStyle, dcColor);
+          if(!confirm('確定要刪除「'+edStyle+'」的顏色「'+dcColor+'」嗎？'+(dcFilled ? '\n\n這個顏色有 '+dcFilled+' 格已經填過數字，刪除後畫面上會看不到（數字會保留在後端）。' : '')+'\n\n只是暫時不盤的話，建議改用「隱藏整色」。')) return;
+          edMutate = function(colors){
+            var ci = colors.findIndex(function(c){ return c.name === dcColor; });
+            if(ci === -1) return false;
+            colors.splice(ci, 1);
+            // 連同這個顏色的隱藏設定一起清掉，之後再新增同名顏色才不會一出現就是隱藏的
+            if(state.hiddenColors[edStyle]) delete state.hiddenColors[edStyle][dcColor];
+            if(state.hiddenSizes[edStyle]) delete state.hiddenSizes[edStyle][dcColor];
+          };
+          edDoneMsg = "已刪除顏色「"+dcColor+"」";
+        }
+
+        el.disabled = true;
+        var edOk = await editStyleContent(edStyle, edMutate);
+        el.disabled = false;
+        showToast(edOk ? edDoneMsg : "儲存失敗，沒有變更，請檢查網路後再試");
+        var edKeepY = window.scrollY;
+        render();
+        window.scrollTo(0, edKeepY);
       }
 
       else if(action === 'toggle-size-hidden'){
