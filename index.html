@@ -3840,11 +3840,11 @@ function buildVerifyBtnHtml(styleName){
   if(!canOperateSummary()){
     return verified
       ? '<span class="mini-btn verified" style="cursor:default;">✓ 已核對</span>'
-      : '<span class="mini-btn" style="cursor:default;">核對完成</span>';
+      : '<span class="mini-btn" style="cursor:default;">未核對</span>';
   }
   return verified
     ? '<button class="mini-btn verified" data-action="unverify-style-confirm" data-style="'+escapeHtml(styleName)+'">✓ 已核對</button>'
-    : '<button class="mini-btn" data-action="verify-style" data-style="'+escapeHtml(styleName)+'">核對完成</button>';
+    : '<button class="mini-btn" data-action="verify-style" data-style="'+escapeHtml(styleName)+'">未核對</button>';
 }
 
 // ---------- 複盤清單畫面 ----------
