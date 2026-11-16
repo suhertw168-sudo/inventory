@@ -798,6 +798,8 @@ var state = {
   structure: null,      // 只含「沒被隱藏」的顏色；被隱藏的顏色收在 hiddenStash，存回後端時再合併回去
   hiddenColors: {},     // {款式: {顏色: true}} 管理用設定裡設為隱藏的顏色（後端「_隱藏顏色」分頁）
   hiddenStash: {},      // {款式: [{idx, name, sizes}]} 被隱藏顏色的完整資料與原本的位置，取消隱藏時原樣放回
+  hiddenSizes: {},      // {款式: {顏色: {尺寸: true}}} 單獨隱藏的尺寸
+  hiddenSizeStash: {},  // {款式: {顏色: [{idx, size}]}} 被隱藏尺寸與原本的位置
   hideColorStyle: "",   // 管理用設定「隱藏顏色」面板目前選的款式
   counts: {},           // key "style|color|size" -> {shelf, stock}
   recounts: {},         // key "style|color|size" -> {shelf, stock, note, assignee, markedAt, editingBy, editingAt} 複盤任務
@@ -1684,10 +1686,11 @@ function findBrandGroupForStyle(styleName){
   return null;
 }
 
-// ---------- 隱藏顏色 ----------
-// 設計：state.structure 永遠只放「看得到」的顏色，所以盤點、進度、彙總、匯出、複盤標記全部自動略過隱藏的顏色，
+// ---------- 隱藏顏色／隱藏尺寸 ----------
+// 設計：state.structure 永遠只放「看得到」的顏色與尺寸，所以盤點、進度、彙總、匯出、複盤標記全部自動略過隱藏的項目，
 // 不用每個地方各自判斷。被隱藏的顏色（含尺寸與原本的排列位置）收在 state.hiddenStash，
-// 存回後端時由 restoreHiddenColors() 合併回去，後端的結構分頁因此始終是完整的。
+// 被隱藏的單一尺寸收在 state.hiddenSizeStash，存回後端時由 restoreHiddenColors() 合併回去，
+// 後端的結構分頁因此始終是完整的。
 // 所有指定 state.structure 的地方都會經過 sortStructureByStyle()，分離動作統一在那裡做。
 
 // 把後端回傳的 {款式:[顏色]} 轉成 {款式:{顏色:true}}
@@ -1704,8 +1707,40 @@ function normalizeHiddenColors(raw){
   });
   return out;
 }
+// 把後端回傳的 {款式:{顏色:[尺寸]}} 轉成 {款式:{顏色:{尺寸:true}}}
+function normalizeHiddenSizes(raw){
+  var out = {};
+  if(!raw || typeof raw !== "object") return out;
+  Object.keys(raw).forEach(function(style){
+    var byColor = raw[style];
+    if(!byColor || typeof byColor !== "object") return;
+    Object.keys(byColor).forEach(function(color){
+      var list = byColor[color];
+      if(!Array.isArray(list)) return;
+      list.forEach(function(z){
+        if(!out[style]) out[style] = {};
+        if(!out[style][color]) out[style][color] = {};
+        out[style][color][String(z)] = true;
+      });
+    });
+  });
+  return out;
+}
 function isColorHidden(style, color){
   return !!(state.hiddenColors[style] && state.hiddenColors[style][color]);
+}
+function isSizeHidden(style, color, size){
+  var m = state.hiddenSizes[style];
+  return !!(m && m[color] && m[color][size]);
+}
+// 把「看得到的尺寸」跟「收起來的隱藏尺寸」依原本位置合併成完整清單
+function mergeSizesWithStash(visibleSizes, stashList){
+  var full = (visibleSizes || []).slice();
+  (stashList || []).slice().sort(function(a, b){ return a.idx - b.idx; }).forEach(function(h){
+    if(full.indexOf(h.size) !== -1) return;
+    full.splice(Math.min(h.idx, full.length), 0, h.size);
+  });
+  return full;
 }
 // 把一個款式「看得到的顏色」跟「收起來的隱藏顏色」依原本位置合併成完整清單
 function mergeColorsWithStash(visibleColors, stashList){
@@ -1717,54 +1752,88 @@ function mergeColorsWithStash(visibleColors, stashList){
   });
   return full;
 }
-// 某款式的完整顏色清單（含隱藏的），給管理用設定顯示用
+// 某款式的完整顏色清單（含隱藏的顏色，每個顏色也含隱藏的尺寸）
 function fullColorsOfStyle(st){
-  return mergeColorsWithStash(st.colors, state.hiddenStash[st.style]);
+  var sizeStash = state.hiddenSizeStash[st.style] || {};
+  var withSizes = (st.colors || []).map(function(c){
+    return { name: c.name, sizes: mergeSizesWithStash(c.sizes, sizeStash[c.name]) };
+  });
+  return mergeColorsWithStash(withSizes, state.hiddenStash[st.style]);
 }
-// 存回後端用：回傳一份「隱藏顏色都放回去」的完整結構（不改動傳進來的物件）
+// 存回後端用：回傳一份「隱藏的顏色與尺寸都放回去」的完整結構（不改動傳進來的物件）
 function restoreHiddenColors(structure){
   return structure.map(function(st){
     var stash = state.hiddenStash[st.style];
-    if(!stash || !stash.length) return st;
+    var sizeStash = state.hiddenSizeStash[st.style];
+    if(!(stash && stash.length) && !(sizeStash && Object.keys(sizeStash).length)) return st;
     var copy = {};
     Object.keys(st).forEach(function(k){ copy[k] = st[k]; });
-    copy.colors = mergeColorsWithStash(st.colors, stash);
+    copy.colors = fullColorsOfStyle(st);
     return copy;
   });
 }
-// 把結構裡「被設為隱藏」的顏色抽出來收進 state.hiddenStash，回傳只剩看得到顏色的結構
+// 把結構裡「被設為隱藏」的顏色與尺寸抽出來收進暫存，回傳只剩看得到項目的結構
 function stashHiddenColors(structure){
   var present = {};
   var result = structure.map(function(st){
     present[st.style] = true;
     var hiddenMap = state.hiddenColors[st.style];
-    if(!hiddenMap){ delete state.hiddenStash[st.style]; return st; }
-    var full = mergeColorsWithStash(st.colors, state.hiddenStash[st.style]);
-    var visible = [], stash = [];
+    var hiddenSizeMap = state.hiddenSizes[st.style];
+    if(!hiddenMap && !hiddenSizeMap){
+      delete state.hiddenStash[st.style];
+      delete state.hiddenSizeStash[st.style];
+      return st;
+    }
+    var full = fullColorsOfStyle(st);
+    var visible = [], stash = [], sizeStash = {};
     full.forEach(function(c, i){
-      if(hiddenMap[c.name]) stash.push({ idx: i, name: c.name, sizes: (c.sizes || []).slice() });
-      else visible.push(c);
+      if(hiddenMap && hiddenMap[c.name]){
+        stash.push({ idx: i, name: c.name, sizes: (c.sizes || []).slice() });
+        return;
+      }
+      var hs = hiddenSizeMap && hiddenSizeMap[c.name];
+      if(!hs){ visible.push(c); return; }
+      var vs = [], ss = [];
+      (c.sizes || []).forEach(function(z, j){
+        if(hs[z]) ss.push({ idx: j, size: z }); else vs.push(z);
+      });
+      if(vs.length === 0){
+        // 尺寸全部被隱藏（正常操作會被擋下，只有直接改 Sheet 才會發生）：整個顏色當作隱藏，避免出現沒有尺寸的顏色
+        stash.push({ idx: i, name: c.name, sizes: (c.sizes || []).slice() });
+        return;
+      }
+      if(ss.length) sizeStash[c.name] = ss;
+      visible.push({ name: c.name, sizes: vs });
     });
     if(stash.length) state.hiddenStash[st.style] = stash; else delete state.hiddenStash[st.style];
+    if(Object.keys(sizeStash).length) state.hiddenSizeStash[st.style] = sizeStash; else delete state.hiddenSizeStash[st.style];
     st.colors = visible;
     return st;
   });
   // 已經不存在的款式，清掉殘留的隱藏資料
-  Object.keys(state.hiddenStash).forEach(function(style){ if(!present[style]) delete state.hiddenStash[style]; });
-  Object.keys(state.hiddenColors).forEach(function(style){ if(!present[style]) delete state.hiddenColors[style]; });
+  [state.hiddenStash, state.hiddenSizeStash, state.hiddenColors, state.hiddenSizes].forEach(function(map){
+    Object.keys(map).forEach(function(style){ if(!present[style]) delete map[style]; });
+  });
   return result;
 }
-// 某款式某顏色目前有沒有還在進行的複盤任務
-function colorHasRecountTasks(style, color){
+// 某款式某顏色（可再指定尺寸）目前有沒有複盤任務
+function colorHasRecountTasks(style, color, size){
   var prefix = style + "|" + color + "|";
+  if(size !== undefined) return (state.recounts || {}).hasOwnProperty(prefix + size);
   return Object.keys(state.recounts || {}).some(function(k){ return k.indexOf(prefix) === 0; });
 }
-// 設定／取消隱藏（樂觀更新，背景送後端）
-async function setColorHiddenRemote(style, color, hidden){
+// 改隱藏設定前：先把這個款式還原成完整清單，改完旗標後再由 sortStructureByStyle 重新分離
+function unstashStyleForEdit(style){
   var st = state.structure.find(function(x){ return x.style === style; });
-  if(!st) return;
-  st.colors = fullColorsOfStyle(st); // 先還原成完整清單，改完旗標後再重新分離
+  if(!st) return null;
+  st.colors = fullColorsOfStyle(st);
   delete state.hiddenStash[style];
+  delete state.hiddenSizeStash[style];
+  return st;
+}
+// 設定／取消隱藏顏色（樂觀更新，背景送後端）
+async function setColorHiddenRemote(style, color, hidden){
+  if(!unstashStyleForEdit(style)) return;
   if(hidden){
     if(!state.hiddenColors[style]) state.hiddenColors[style] = {};
     state.hiddenColors[style][color] = true;
@@ -1779,6 +1848,38 @@ async function setColorHiddenRemote(style, color, hidden){
     console.error("set color hidden failed", e);
     showToast((hidden ? "隱藏" : "取消隱藏") + "失敗，請檢查網路後重新整理確認");
   }
+}
+// 設定／取消隱藏單一尺寸（樂觀更新，背景送後端）
+async function setSizeHiddenRemote(style, color, size, hidden){
+  if(!unstashStyleForEdit(style)) return;
+  if(hidden){
+    if(!state.hiddenSizes[style]) state.hiddenSizes[style] = {};
+    if(!state.hiddenSizes[style][color]) state.hiddenSizes[style][color] = {};
+    state.hiddenSizes[style][color][size] = true;
+  } else if(state.hiddenSizes[style] && state.hiddenSizes[style][color]){
+    delete state.hiddenSizes[style][color][size];
+    if(Object.keys(state.hiddenSizes[style][color]).length === 0) delete state.hiddenSizes[style][color];
+    if(Object.keys(state.hiddenSizes[style]).length === 0) delete state.hiddenSizes[style];
+  }
+  state.structure = sortStructureByStyle(state.structure);
+  try{
+    await apiPost({ action:"setSizeHidden", style:style, color:color, size:size, hidden: !!hidden });
+  }catch(e){
+    console.error("set size hidden failed", e);
+    showToast((hidden ? "隱藏" : "取消隱藏") + "失敗，請檢查網路後重新整理確認");
+  }
+}
+// 某款式目前隱藏了幾個尺寸（不含整色隱藏的）
+function hiddenSizeCountOfStyle(style){
+  var m = state.hiddenSizeStash[style] || {};
+  return Object.keys(m).reduce(function(n, c){ return n + m[c].length; }, 0);
+}
+function hiddenSummaryText(style){
+  var nc = (state.hiddenStash[style] || []).length, nz = hiddenSizeCountOfStyle(style);
+  var parts = [];
+  if(nc) parts.push(nc + ' 色');
+  if(nz) parts.push(nz + ' 個尺寸');
+  return parts.join('、');
 }
 
 function sortStructureByStyle(structure){
@@ -1943,6 +2044,7 @@ async function init(){
       if(all.assignments){ state.assignments = normalizeAssignments(all.assignments); }
       if(all.brandOwners){ state.brandOwners = normalizeBrandOwners(all.brandOwners); }
       if(all.hiddenColors){ state.hiddenColors = normalizeHiddenColors(all.hiddenColors); }
+      if(all.hiddenSizes){ state.hiddenSizes = normalizeHiddenSizes(all.hiddenSizes); }
     } else {
       fetchFailed = true;
     }
@@ -1958,7 +2060,7 @@ async function init(){
     return;
   }
 
-  state.hiddenStash = {}; // 後端給的是完整結構，隱藏顏色重新從裡面分離
+  state.hiddenStash = {}; state.hiddenSizeStash = {}; // 後端給的是完整結構，隱藏項目重新從裡面分離
   state.structure = sortStructureByStyle(normalizeStructure(structure));
   state.counts = normalizeCounts(counts);
   state.view = "home";
@@ -2086,8 +2188,9 @@ async function syncFromBackend(){
     // 不然品牌層狀態(全部認領/核對中/已完成)明明變了，畫面卻靜悄悄的沒反應，理由同上面 recounts/assignments。
     var prevClaimsJSON = JSON.stringify(state.claims);
     var prevVerifiedJSON = JSON.stringify(state.verified);
-    var prevHiddenJSON = JSON.stringify(state.hiddenColors);
+    var prevHiddenJSON = JSON.stringify([state.hiddenColors, state.hiddenSizes]);
     if(all.hiddenColors){ state.hiddenColors = normalizeHiddenColors(all.hiddenColors); }
+    if(all.hiddenSizes){ state.hiddenSizes = normalizeHiddenSizes(all.hiddenSizes); }
     // 盤點畫面是用「第幾個款式／顏色／尺寸」記目前位置的，結構一變(有人隱藏顏色、刪款式)位置就會錯位，
     // 先記下目前這格的名稱，結構更新後再用名稱找回正確位置，避免數字存到別的顏色去
     var countingSlot = null;
@@ -2113,7 +2216,7 @@ async function syncFromBackend(){
     if(JSON.stringify(state.assignments) !== prevAssignmentsJSON) hasChange = true;
     if(JSON.stringify(state.claims) !== prevClaimsJSON) hasChange = true;
     if(JSON.stringify(state.verified) !== prevVerifiedJSON) hasChange = true;
-    if(JSON.stringify(state.hiddenColors) !== prevHiddenJSON) hasChange = true;
+    if(JSON.stringify([state.hiddenColors, state.hiddenSizes]) !== prevHiddenJSON) hasChange = true;
     // 比 counts：先比 key 數量，再逐個比 total
     var oldKeys = Object.keys(state.counts);
     var newKeys = Object.keys(newCountsRaw);
@@ -2132,7 +2235,7 @@ async function syncFromBackend(){
     }
 
     // 更新結構（如果有人新增/刪除款式也會同步）
-    state.hiddenStash = {}; // 後端給的是完整結構，隱藏顏色重新從裡面分離
+    state.hiddenStash = {}; state.hiddenSizeStash = {}; // 後端給的是完整結構，隱藏項目重新從裡面分離
     state.structure = sortStructureByStyle(newStructure);
 
     // 盤點畫面：用名稱把目前位置找回來；這格已經不存在(被隱藏或刪除)就退回首頁
@@ -2144,7 +2247,7 @@ async function syncFromBackend(){
         state.view = "home";
         state.curStyleIdx = 0; state.curColorIdx = 0; state.curSizeIdx = 0;
         render();
-        showToast("「" + countingSlot.style + " " + countingSlot.color + "」已被管理人員隱藏或移除，已返回首頁");
+        showToast("「" + countingSlot.style + " " + countingSlot.color + " " + countingSlot.size + "」已被管理人員隱藏或移除，已返回首頁");
       } else {
         state.curStyleIdx = nsi; state.curColorIdx = nci; state.curSizeIdx = nzi;
       }
@@ -2730,7 +2833,7 @@ function renderSetup(){
       : '<span style="background:#f1ece1; color:var(--muted); font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">未分組</span>';
     return '<div class="list-row">'+
       '<div class="left">'+escapeHtml(st.style)+brandLabel+'<div class="meta">'+st.colors.map(function(c){return escapeHtml(c.name);}).join('、')+
-        ((state.hiddenStash[st.style] || []).length ? '<span style="color:#c45a1e;">（另有 '+state.hiddenStash[st.style].length+' 色已隱藏）</span>' : '')+
+        (hiddenSummaryText(st.style) ? '<span style="color:#c45a1e;">（另有 '+hiddenSummaryText(st.style)+'已隱藏）</span>' : '')+
       '</div></div>'+
       '<button class="icon-btn" data-action="delete-style" data-style-idx="'+idx+'" style="color:var(--accent-deep)">刪除</button>'+
     '</div>';
@@ -2740,17 +2843,24 @@ function renderSetup(){
   var hideStyle = structure.find(function(st){ return st.style === state.hideColorStyle; }) || structure[0] || null;
   state.hideColorStyle = hideStyle ? hideStyle.style : "";
   var hideStyleOptions = structure.map(function(st){
-    var n = (state.hiddenStash[st.style] || []).length;
-    return '<option value="'+escapeHtml(st.style)+'"'+(hideStyle && st.style === hideStyle.style ? ' selected' : '')+'>'+escapeHtml(st.style)+(n ? ' （已隱藏 '+n+' 色）' : '')+'</option>';
+    var n = hiddenSummaryText(st.style);
+    return '<option value="'+escapeHtml(st.style)+'"'+(hideStyle && st.style === hideStyle.style ? ' selected' : '')+'>'+escapeHtml(st.style)+(n ? ' （已隱藏 '+n+'）' : '')+'</option>';
   }).join("");
   var hideColorRows = !hideStyle ? emptyStateHtml('尚無款式','') : fullColorsOfStyle(hideStyle).map(function(c){
     var hidden = isColorHidden(hideStyle.style, c.name);
-    return '<div class="list-row"'+(hidden ? ' style="background:#faf7f1;"' : '')+'>'+
+    // 尺寸列：沒被整色隱藏的顏色，底下列出每個尺寸，點一下切換隱藏
+    var sizeChips = hidden ? '' : '<div style="display:flex; flex-wrap:wrap; gap:6px; padding:0 0 12px; border-bottom:1px solid var(--line);">'+
+      c.sizes.map(function(z){
+        var zh = isSizeHidden(hideStyle.style, c.name, z);
+        return '<button class="mini-btn" data-action="toggle-size-hidden" data-style="'+escapeHtml(hideStyle.style)+'" data-color="'+escapeHtml(c.name)+'" data-size="'+escapeHtml(z)+'"'+
+          (zh ? ' style="border-color:#e3a89a; background:#fdf3ef; color:#c45a1e; text-decoration:line-through;" title="已隱藏，點一下取消隱藏"' : ' title="點一下隱藏這個尺寸"')+'>'+escapeHtml(z)+'</button>';
+      }).join('')+'</div>';
+    return '<div class="list-row"'+(hidden ? ' style="background:#faf7f1;"' : ' style="border-bottom:none;"')+'>'+
       '<div class="left"'+(hidden ? ' style="color:var(--muted);"' : '')+'>'+escapeHtml(c.name)+
         (hidden ? '<span style="background:#fdf3ef; color:#c45a1e; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">已隱藏</span>' : '')+
       '</div>'+
-      '<button class="icon-btn" data-action="toggle-color-hidden" data-style="'+escapeHtml(hideStyle.style)+'" data-color="'+escapeHtml(c.name)+'"'+(hidden ? '' : ' style="color:var(--accent-deep)"')+'>'+(hidden ? '取消隱藏' : '隱藏')+'</button>'+
-    '</div>';
+      '<button class="icon-btn" data-action="toggle-color-hidden" data-style="'+escapeHtml(hideStyle.style)+'" data-color="'+escapeHtml(c.name)+'"'+(hidden ? '' : ' style="color:var(--accent-deep)"')+'>'+(hidden ? '取消隱藏' : '隱藏整色')+'</button>'+
+    '</div>'+sizeChips;
   }).join("");
 
   // 為「設定品牌」功能準備款式下拉選單
@@ -2870,8 +2980,8 @@ function renderSetup(){
       '<button class="btn" data-action="set-style-brand">套用品牌設定</button>'+
     '</div>'+
     '<div class="panel" id="hide-color-panel">'+
-      '<h2>隱藏顏色</h2>'+
-      '<p class="sub">把暫時不需要盤點的顏色隱藏起來。隱藏後這個顏色不會出現在盤點、進度、彙總與匯出（含 ERP 格式與 Google Sheet 彙總分頁），也就不會再記錄它的數字。之前填過的數字會保留，按「取消隱藏」就會連同數字原樣恢復。</p>'+
+      '<h2>隱藏顏色／尺寸</h2>'+
+      '<p class="sub">把暫時不需要盤點的顏色或尺寸隱藏起來。按「隱藏整色」隱藏整個顏色；點顏色底下的尺寸可以只隱藏那個尺寸（<span style="color:#c45a1e; text-decoration:line-through;">劃線</span>代表已隱藏，再點一下取消）。隱藏後不會出現在盤點、進度、彙總與匯出（含 ERP 格式與 Google Sheet 彙總分頁），也就不會再記錄數字。之前填過的數字會保留，取消隱藏就會連同數字原樣恢復。</p>'+
       '<div class="field">'+
         '<label>選擇款式</label>'+
         '<select id="hide-color-style">'+hideStyleOptions+'</select>'+
@@ -5308,6 +5418,8 @@ function bindEvents(){
         // 連同這個款式的隱藏設定一起清掉，避免之後新增同名款式時舊的隱藏顏色又跑回來
         delete state.hiddenColors[styleName];
         delete state.hiddenStash[styleName];
+        delete state.hiddenSizes[styleName];
+        delete state.hiddenSizeStash[styleName];
         await saveStructure(state.structure);
         showToast("已刪除「"+styleName+"」");
         render();
@@ -5423,6 +5535,33 @@ function bindEvents(){
         }
       }
 
+      else if(action === 'toggle-size-hidden'){
+        var hzStyle = el.getAttribute('data-style');
+        var hzColor = el.getAttribute('data-color');
+        var hzSize = el.getAttribute('data-size');
+        var hzNowHidden = isSizeHidden(hzStyle, hzColor, hzSize);
+        if(!hzNowHidden){
+          var hzSt = state.structure.find(function(x){ return x.style === hzStyle; });
+          var hzCol = hzSt && hzSt.colors.find(function(c){ return c.name === hzColor; });
+          if(hzCol && hzCol.sizes.length <= 1){
+            showToast("每個顏色至少要保留一個尺寸；整個顏色都不盤的話請用「隱藏整色」");
+            return;
+          }
+          if(colorHasRecountTasks(hzStyle, hzColor, hzSize)){
+            showToast("「"+hzColor+" "+hzSize+"」還有複盤任務，請先到複盤清單處理或移除後再隱藏");
+            return;
+          }
+          if(!confirm('確定要隱藏「'+hzStyle+' '+hzColor+' '+hzSize+'」嗎？\n\n隱藏後不會出現在盤點、彙總與匯出，也不會再記錄數字。已填過的數字會保留，取消隱藏就會恢復。')){
+            return;
+          }
+        }
+        setSizeHiddenRemote(hzStyle, hzColor, hzSize, !hzNowHidden); // 不 await：本地已樂觀更新
+        showToast(hzNowHidden ? '已取消隱藏「'+hzColor+' '+hzSize+'」' : '已隱藏「'+hzColor+' '+hzSize+'」');
+        var hzKeepY = window.scrollY;
+        render();
+        window.scrollTo(0, hzKeepY);
+      }
+
       else if(action === 'toggle-color-hidden'){
         var hcStyle = el.getAttribute('data-style');
         var hcColor = el.getAttribute('data-color');
@@ -5491,7 +5630,9 @@ function bindEvents(){
             var item = state.structure.find(function(s){ return s.style === oldName; });
             if(item) item.style = newName;
             if(state.hiddenColors[oldName]){ state.hiddenColors[newName] = state.hiddenColors[oldName]; delete state.hiddenColors[oldName]; }
-            if(state.hiddenStash[oldName]){ state.hiddenStash[newName] = state.hiddenStash[oldName]; delete state.hiddenStash[oldName]; }
+            [state.hiddenStash, state.hiddenSizes, state.hiddenSizeStash].forEach(function(map){
+              if(map[oldName]){ map[newName] = map[oldName]; delete map[oldName]; }
+            });
             state.structure = sortStructureByStyle(state.structure);
             var newCounts = {};
             Object.keys(state.counts).forEach(function(k){
