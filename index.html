@@ -118,6 +118,27 @@
     flex-direction:column;
     gap:16px;
   }
+  /* ---- 管理用設定：分組收合 ---- */
+  .sg{ display:flex; flex-direction:column; gap:12px; }
+  .sg-head{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%;
+    background:#efe9dc; border:1px solid var(--line); border-radius:14px;
+    padding:14px 16px; font-family:inherit; font-size:17px; font-weight:800; color:var(--ink);
+    cursor:pointer; text-align:left;
+  }
+  .sg-head .sg-meta{ font-size:12px; font-weight:600; color:var(--muted); margin-left:8px; }
+  .sg-head .sg-arrow, .sp-head .sp-arrow{ flex:0 0 auto; color:var(--muted); font-size:14px; transition:transform .15s; }
+  .sg.open > .sg-head .sg-arrow, .panel.sp-open > .sp-head .sp-arrow{ transform:rotate(90deg); }
+  .sg-body{ display:none; flex-direction:column; gap:12px; padding-left:10px; border-left:3px solid #e4dccb; }
+  .sg.open > .sg-body{ display:flex; }
+  .sg.sg-danger > .sg-head{ background:#fdf3ef; border-color:#e3a89a; color:var(--accent-deep); }
+  .panel .sp-head{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    cursor:pointer; margin:0; font-size:17px;
+  }
+  .panel .sp-head .sp-meta{ font-size:12px; font-weight:600; color:var(--muted); margin-left:8px; }
+  .panel .sp-body{ display:none; margin-top:10px; }
+  .panel.sp-open > .sp-body{ display:block; }
   /* ---- Setup screens ---- */
   .panel{
     background:var(--card);
@@ -800,6 +821,7 @@ var state = {
   hiddenStash: {},      // {款式: [{idx, name, sizes}]} 被隱藏顏色的完整資料與原本的位置，取消隱藏時原樣放回
   hiddenSizes: {},      // {款式: {顏色: {尺寸: true}}} 單獨隱藏的尺寸
   hiddenSizeStash: {},  // {款式: {顏色: [{idx, size}]}} 被隱藏尺寸與原本的位置
+  setupOpen: null,      // 管理用設定頁各群組／區塊的展開狀態，見 organizeSetupPanels()
   hideColorStyle: "",   // 管理用設定「隱藏顏色」面板目前選的款式
   counts: {},           // key "style|color|size" -> {shelf, stock}
   recounts: {},         // key "style|color|size" -> {shelf, stock, note, assignee, markedAt, editingBy, editingAt} 複盤任務
@@ -2441,11 +2463,79 @@ function styleProgress(style, counts){
 }
 
 // ---------- Render root ----------
+// ---------- 管理用設定：把區塊分組並做成可展開／收合 ----------
+// renderSetup() 照舊產生全部區塊，這裡在畫好之後依標題把區塊搬進四個群組，並把每個區塊包成「標題列＋內容」。
+// 只動外層包裝，區塊裡的欄位、按鈕、事件完全不變。認不得標題的區塊會原樣留在最下面，不會被藏起來。
+var SETUP_GROUPS = [
+  { key:"g-style",  title:"款式管理",   panels:["目前的款式","編輯款式內容","新增單一款式","重新命名款式","批次匯入"] },
+  { key:"g-brand",  title:"品牌設定",   panels:["設定款式所屬品牌","調整品牌顯示順序","品牌負責人"] },
+  { key:"g-people", title:"人員與權限", panels:["人員名單管理","主管設定","Key in 人員"] },
+  { key:"g-data",   title:"資料維護",   panels:["整理原始資料","清除全部資料"], danger:true }
+];
+function setupPanelMeta(name){
+  if(name === "目前的款式") return state.structure.length + " 款";
+  if(name === "人員名單管理") return state.people.length + " 人";
+  if(name === "主管設定") return state.managers.length + " 人";
+  if(name === "Key in 人員") return state.keyinUsers.length + " 人";
+  return "";
+}
+function organizeSetupPanels(app){
+  var main = app.querySelector("main");
+  if(!main) return;
+  if(!state.setupOpen){
+    // 預設：只展開最常用的「款式管理」，裡面先打開「編輯款式內容」
+    state.setupOpen = { "g-style": true, "p-編輯款式內容": true };
+  }
+  var panels = Array.prototype.slice.call(main.children).filter(function(n){ return n.classList && n.classList.contains("panel"); });
+  var byName = {};
+  panels.forEach(function(p){
+    var h2 = p.querySelector("h2");
+    if(!h2) return;
+    var title = h2.textContent.trim();
+    SETUP_GROUPS.forEach(function(g){
+      g.panels.forEach(function(name){ if(title.indexOf(name) === 0 && !byName[name]) byName[name] = p; });
+    });
+  });
+  SETUP_GROUPS.forEach(function(g){
+    var found = g.panels.filter(function(name){ return byName[name]; });
+    if(!found.length) return;
+    var box = document.createElement("div");
+    box.className = "sg" + (g.danger ? " sg-danger" : "") + (state.setupOpen[g.key] ? " open" : "");
+    var head = document.createElement("button");
+    head.type = "button";
+    head.className = "sg-head";
+    head.setAttribute("data-action", "setup-toggle");
+    head.setAttribute("data-key", g.key);
+    head.innerHTML = '<span>' + escapeHtml(g.title) + '<span class="sg-meta">' + found.length + ' 項設定</span></span><span class="sg-arrow">▶</span>';
+    var body = document.createElement("div");
+    body.className = "sg-body";
+    box.appendChild(head); box.appendChild(body);
+    main.appendChild(box);
+    found.forEach(function(name){
+      var p = byName[name];
+      var pkey = "p-" + name;
+      var h2 = p.querySelector("h2");
+      // 標題列以外的內容全部收進 sp-body
+      var pbody = document.createElement("div");
+      pbody.className = "sp-body";
+      Array.prototype.slice.call(p.childNodes).forEach(function(n){ if(n !== h2) pbody.appendChild(n); });
+      p.appendChild(pbody);
+      h2.classList.add("sp-head");
+      h2.setAttribute("data-action", "setup-toggle");
+      h2.setAttribute("data-key", pkey);
+      var meta = setupPanelMeta(name);
+      h2.innerHTML = '<span>' + h2.innerHTML + (meta ? '<span class="sp-meta">' + escapeHtml(meta) + '</span>' : '') + '</span><span class="sp-arrow">▶</span>';
+      if(state.setupOpen[pkey]) p.classList.add("sp-open");
+      body.appendChild(p);
+    });
+  });
+}
+
 function render(){
   var app = document.getElementById("app");
   if(state.view === "home") app.innerHTML = renderHome();
   else if(state.view === "brandModels") app.innerHTML = renderBrandModels();
-  else if(state.view === "setup") app.innerHTML = renderSetup();
+  else if(state.view === "setup"){ app.innerHTML = renderSetup(); organizeSetupPanels(app); }
   else if(state.view === "counting") app.innerHTML = renderCounting();
   else if(state.view === "summary") app.innerHTML = renderSummary();
   else if(state.view === "recount") app.innerHTML = renderRecount();
@@ -5025,7 +5115,18 @@ function bindEvents(){
           return;
         }
         state.view = "setup";
+        state.setupOpen = null; // 每次進來都回到預設：只展開「款式管理」
         render();
+      }
+
+      else if(action === 'setup-toggle'){
+        // 群組／區塊標題：直接切換顯示，不整頁重畫，畫面位置不會跳
+        var stKey = el.getAttribute('data-key');
+        var stBox = el.parentNode;
+        var stOpenCls = stBox.classList.contains('sg') ? 'open' : 'sp-open';
+        var stNow = !stBox.classList.contains(stOpenCls);
+        stBox.classList.toggle(stOpenCls, stNow);
+        state.setupOpen[stKey] = stNow;
       }
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
 
