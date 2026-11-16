@@ -795,7 +795,10 @@ var ADMIN_PASSWORD = "6666";
 var ENABLE_SECOND_ROUND = false;
 
 var state = {
-  structure: null,
+  structure: null,      // 只含「沒被隱藏」的顏色；被隱藏的顏色收在 hiddenStash，存回後端時再合併回去
+  hiddenColors: {},     // {款式: {顏色: true}} 管理用設定裡設為隱藏的顏色（後端「_隱藏顏色」分頁）
+  hiddenStash: {},      // {款式: [{idx, name, sizes}]} 被隱藏顏色的完整資料與原本的位置，取消隱藏時原樣放回
+  hideColorStyle: "",   // 管理用設定「隱藏顏色」面板目前選的款式
   counts: {},           // key "style|color|size" -> {shelf, stock}
   recounts: {},         // key "style|color|size" -> {shelf, stock, note, assignee, markedAt, editingBy, editingAt} 複盤任務
   recountFilter: "",    // 複盤清單的認領人篩選（空=全部）
@@ -883,7 +886,8 @@ async function loadStructure(){
 }
 async function saveStructure(structure){
   try{
-    await apiPost({ action:"saveStructure", structure: structure });
+    // 畫面上的結構不含隱藏的顏色，存回後端前要合併回去，否則隱藏的顏色會被當成刪除
+    await apiPost({ action:"saveStructure", structure: restoreHiddenColors(structure) });
     return true;
   }catch(e){
     console.error("save structure failed", e);
@@ -1680,7 +1684,105 @@ function findBrandGroupForStyle(styleName){
   return null;
 }
 
+// ---------- 隱藏顏色 ----------
+// 設計：state.structure 永遠只放「看得到」的顏色，所以盤點、進度、彙總、匯出、複盤標記全部自動略過隱藏的顏色，
+// 不用每個地方各自判斷。被隱藏的顏色（含尺寸與原本的排列位置）收在 state.hiddenStash，
+// 存回後端時由 restoreHiddenColors() 合併回去，後端的結構分頁因此始終是完整的。
+// 所有指定 state.structure 的地方都會經過 sortStructureByStyle()，分離動作統一在那裡做。
+
+// 把後端回傳的 {款式:[顏色]} 轉成 {款式:{顏色:true}}
+function normalizeHiddenColors(raw){
+  var out = {};
+  if(!raw || typeof raw !== "object") return out;
+  Object.keys(raw).forEach(function(style){
+    var list = raw[style];
+    if(!Array.isArray(list)) return;
+    list.forEach(function(c){
+      if(!out[style]) out[style] = {};
+      out[style][String(c)] = true;
+    });
+  });
+  return out;
+}
+function isColorHidden(style, color){
+  return !!(state.hiddenColors[style] && state.hiddenColors[style][color]);
+}
+// 把一個款式「看得到的顏色」跟「收起來的隱藏顏色」依原本位置合併成完整清單
+function mergeColorsWithStash(visibleColors, stashList){
+  var full = (visibleColors || []).slice();
+  (stashList || []).slice().sort(function(a, b){ return a.idx - b.idx; }).forEach(function(h){
+    var exists = full.some(function(c){ return c.name === h.name; });
+    if(exists) return; // 同名顏色已經在清單裡（例如批次匯入重新帶進來），以清單裡的為準
+    full.splice(Math.min(h.idx, full.length), 0, { name: h.name, sizes: h.sizes.slice() });
+  });
+  return full;
+}
+// 某款式的完整顏色清單（含隱藏的），給管理用設定顯示用
+function fullColorsOfStyle(st){
+  return mergeColorsWithStash(st.colors, state.hiddenStash[st.style]);
+}
+// 存回後端用：回傳一份「隱藏顏色都放回去」的完整結構（不改動傳進來的物件）
+function restoreHiddenColors(structure){
+  return structure.map(function(st){
+    var stash = state.hiddenStash[st.style];
+    if(!stash || !stash.length) return st;
+    var copy = {};
+    Object.keys(st).forEach(function(k){ copy[k] = st[k]; });
+    copy.colors = mergeColorsWithStash(st.colors, stash);
+    return copy;
+  });
+}
+// 把結構裡「被設為隱藏」的顏色抽出來收進 state.hiddenStash，回傳只剩看得到顏色的結構
+function stashHiddenColors(structure){
+  var present = {};
+  var result = structure.map(function(st){
+    present[st.style] = true;
+    var hiddenMap = state.hiddenColors[st.style];
+    if(!hiddenMap){ delete state.hiddenStash[st.style]; return st; }
+    var full = mergeColorsWithStash(st.colors, state.hiddenStash[st.style]);
+    var visible = [], stash = [];
+    full.forEach(function(c, i){
+      if(hiddenMap[c.name]) stash.push({ idx: i, name: c.name, sizes: (c.sizes || []).slice() });
+      else visible.push(c);
+    });
+    if(stash.length) state.hiddenStash[st.style] = stash; else delete state.hiddenStash[st.style];
+    st.colors = visible;
+    return st;
+  });
+  // 已經不存在的款式，清掉殘留的隱藏資料
+  Object.keys(state.hiddenStash).forEach(function(style){ if(!present[style]) delete state.hiddenStash[style]; });
+  Object.keys(state.hiddenColors).forEach(function(style){ if(!present[style]) delete state.hiddenColors[style]; });
+  return result;
+}
+// 某款式某顏色目前有沒有還在進行的複盤任務
+function colorHasRecountTasks(style, color){
+  var prefix = style + "|" + color + "|";
+  return Object.keys(state.recounts || {}).some(function(k){ return k.indexOf(prefix) === 0; });
+}
+// 設定／取消隱藏（樂觀更新，背景送後端）
+async function setColorHiddenRemote(style, color, hidden){
+  var st = state.structure.find(function(x){ return x.style === style; });
+  if(!st) return;
+  st.colors = fullColorsOfStyle(st); // 先還原成完整清單，改完旗標後再重新分離
+  delete state.hiddenStash[style];
+  if(hidden){
+    if(!state.hiddenColors[style]) state.hiddenColors[style] = {};
+    state.hiddenColors[style][color] = true;
+  } else if(state.hiddenColors[style]){
+    delete state.hiddenColors[style][color];
+    if(Object.keys(state.hiddenColors[style]).length === 0) delete state.hiddenColors[style];
+  }
+  state.structure = sortStructureByStyle(state.structure);
+  try{
+    await apiPost({ action:"setColorHidden", style:style, color:color, hidden: !!hidden });
+  }catch(e){
+    console.error("set color hidden failed", e);
+    showToast((hidden ? "隱藏" : "取消隱藏") + "失敗，請檢查網路後重新整理確認");
+  }
+}
+
 function sortStructureByStyle(structure){
+  structure = stashHiddenColors(structure); // 先把隱藏的顏色抽走，見上方「隱藏顏色」說明
   // 改成依 BRAND_ORDER 排序：同品牌的款式聚在一起，沒品牌的放最前面（獨立顯示）
   var orderMap = {};
   BRAND_ORDER.forEach(function(name, idx){ orderMap[name] = idx; });
@@ -1840,6 +1942,7 @@ async function init(){
       if(Array.isArray(all.keyinUsers)){ state.keyinUsers = all.keyinUsers.map(String); }
       if(all.assignments){ state.assignments = normalizeAssignments(all.assignments); }
       if(all.brandOwners){ state.brandOwners = normalizeBrandOwners(all.brandOwners); }
+      if(all.hiddenColors){ state.hiddenColors = normalizeHiddenColors(all.hiddenColors); }
     } else {
       fetchFailed = true;
     }
@@ -1855,6 +1958,7 @@ async function init(){
     return;
   }
 
+  state.hiddenStash = {}; // 後端給的是完整結構，隱藏顏色重新從裡面分離
   state.structure = sortStructureByStyle(normalizeStructure(structure));
   state.counts = normalizeCounts(counts);
   state.view = "home";
@@ -1982,6 +2086,16 @@ async function syncFromBackend(){
     // 不然品牌層狀態(全部認領/核對中/已完成)明明變了，畫面卻靜悄悄的沒反應，理由同上面 recounts/assignments。
     var prevClaimsJSON = JSON.stringify(state.claims);
     var prevVerifiedJSON = JSON.stringify(state.verified);
+    var prevHiddenJSON = JSON.stringify(state.hiddenColors);
+    if(all.hiddenColors){ state.hiddenColors = normalizeHiddenColors(all.hiddenColors); }
+    // 盤點畫面是用「第幾個款式／顏色／尺寸」記目前位置的，結構一變(有人隱藏顏色、刪款式)位置就會錯位，
+    // 先記下目前這格的名稱，結構更新後再用名稱找回正確位置，避免數字存到別的顏色去
+    var countingSlot = null;
+    if(state.view === "counting" && state.structure[state.curStyleIdx]){
+      var cst = state.structure[state.curStyleIdx];
+      var ccol = cst.colors[state.curColorIdx];
+      if(ccol) countingSlot = { style: cst.style, color: ccol.name, size: ccol.sizes[state.curSizeIdx] };
+    }
     if(all.recounts){ state.recounts = normalizeRecounts(all.recounts); }
     if(all.claims){ state.claims = all.claims; }
     if(all.verified){ state.verified = all.verified; }
@@ -1999,6 +2113,7 @@ async function syncFromBackend(){
     if(JSON.stringify(state.assignments) !== prevAssignmentsJSON) hasChange = true;
     if(JSON.stringify(state.claims) !== prevClaimsJSON) hasChange = true;
     if(JSON.stringify(state.verified) !== prevVerifiedJSON) hasChange = true;
+    if(JSON.stringify(state.hiddenColors) !== prevHiddenJSON) hasChange = true;
     // 比 counts：先比 key 數量，再逐個比 total
     var oldKeys = Object.keys(state.counts);
     var newKeys = Object.keys(newCountsRaw);
@@ -2017,7 +2132,23 @@ async function syncFromBackend(){
     }
 
     // 更新結構（如果有人新增/刪除款式也會同步）
+    state.hiddenStash = {}; // 後端給的是完整結構，隱藏顏色重新從裡面分離
     state.structure = sortStructureByStyle(newStructure);
+
+    // 盤點畫面：用名稱把目前位置找回來；這格已經不存在(被隱藏或刪除)就退回首頁
+    if(countingSlot){
+      var nsi = state.structure.findIndex(function(x){ return x.style === countingSlot.style; });
+      var nci = nsi === -1 ? -1 : state.structure[nsi].colors.findIndex(function(c){ return c.name === countingSlot.color; });
+      var nzi = nci === -1 ? -1 : state.structure[nsi].colors[nci].sizes.indexOf(countingSlot.size);
+      if(nzi === -1){
+        state.view = "home";
+        state.curStyleIdx = 0; state.curColorIdx = 0; state.curSizeIdx = 0;
+        render();
+        showToast("「" + countingSlot.style + " " + countingSlot.color + "」已被管理人員隱藏或移除，已返回首頁");
+      } else {
+        state.curStyleIdx = nsi; state.curColorIdx = nci; state.curSizeIdx = nzi;
+      }
+    }
 
     // 更新盤點數字：合併最新後端資料，但保留「目前正在編輯這一格」的本地暫存算式（避免覆蓋使用者正在打的字）
     var newCounts = newCountsRaw;
@@ -2598,8 +2729,27 @@ function renderSetup(){
       ? '<span style="background:#eef4fa; color:#2f5d8a; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">'+escapeHtml(st.brand)+'</span>'
       : '<span style="background:#f1ece1; color:var(--muted); font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">未分組</span>';
     return '<div class="list-row">'+
-      '<div class="left">'+escapeHtml(st.style)+brandLabel+'<div class="meta">'+st.colors.map(function(c){return escapeHtml(c.name);}).join('、')+'</div></div>'+
+      '<div class="left">'+escapeHtml(st.style)+brandLabel+'<div class="meta">'+st.colors.map(function(c){return escapeHtml(c.name);}).join('、')+
+        ((state.hiddenStash[st.style] || []).length ? '<span style="color:#c45a1e;">（另有 '+state.hiddenStash[st.style].length+' 色已隱藏）</span>' : '')+
+      '</div></div>'+
       '<button class="icon-btn" data-action="delete-style" data-style-idx="'+idx+'" style="color:var(--accent-deep)">刪除</button>'+
+    '</div>';
+  }).join("");
+
+  // 「隱藏顏色」面板：選一個款式，列出它全部的顏色（含已隱藏的），每色一顆切換鈕
+  var hideStyle = structure.find(function(st){ return st.style === state.hideColorStyle; }) || structure[0] || null;
+  state.hideColorStyle = hideStyle ? hideStyle.style : "";
+  var hideStyleOptions = structure.map(function(st){
+    var n = (state.hiddenStash[st.style] || []).length;
+    return '<option value="'+escapeHtml(st.style)+'"'+(hideStyle && st.style === hideStyle.style ? ' selected' : '')+'>'+escapeHtml(st.style)+(n ? ' （已隱藏 '+n+' 色）' : '')+'</option>';
+  }).join("");
+  var hideColorRows = !hideStyle ? emptyStateHtml('尚無款式','') : fullColorsOfStyle(hideStyle).map(function(c){
+    var hidden = isColorHidden(hideStyle.style, c.name);
+    return '<div class="list-row"'+(hidden ? ' style="background:#faf7f1;"' : '')+'>'+
+      '<div class="left"'+(hidden ? ' style="color:var(--muted);"' : '')+'>'+escapeHtml(c.name)+
+        (hidden ? '<span style="background:#fdf3ef; color:#c45a1e; font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">已隱藏</span>' : '')+
+      '</div>'+
+      '<button class="icon-btn" data-action="toggle-color-hidden" data-style="'+escapeHtml(hideStyle.style)+'" data-color="'+escapeHtml(c.name)+'"'+(hidden ? '' : ' style="color:var(--accent-deep)"')+'>'+(hidden ? '取消隱藏' : '隱藏')+'</button>'+
     '</div>';
   }).join("");
 
@@ -2718,6 +2868,15 @@ function renderSetup(){
         '<input type="text" id="set-brand-name" placeholder="例如：CP、AG短袖（中英文都可，相同名稱會自動聚在一起）">'+
       '</div>'+
       '<button class="btn" data-action="set-style-brand">套用品牌設定</button>'+
+    '</div>'+
+    '<div class="panel" id="hide-color-panel">'+
+      '<h2>隱藏顏色</h2>'+
+      '<p class="sub">把暫時不需要盤點的顏色隱藏起來。隱藏後這個顏色不會出現在盤點、進度、彙總與匯出（含 ERP 格式與 Google Sheet 彙總分頁），也就不會再記錄它的數字。之前填過的數字會保留，按「取消隱藏」就會連同數字原樣恢復。</p>'+
+      '<div class="field">'+
+        '<label>選擇款式</label>'+
+        '<select id="hide-color-style">'+hideStyleOptions+'</select>'+
+      '</div>'+
+      hideColorRows+
     '</div>'+
     '<div class="panel">'+
       '<h2>調整品牌顯示順序</h2>'+
@@ -5146,6 +5305,9 @@ function bindEvents(){
           return;
         }
         state.structure.splice(idx,1);
+        // 連同這個款式的隱藏設定一起清掉，避免之後新增同名款式時舊的隱藏顏色又跑回來
+        delete state.hiddenColors[styleName];
+        delete state.hiddenStash[styleName];
         await saveStructure(state.structure);
         showToast("已刪除「"+styleName+"」");
         render();
@@ -5261,6 +5423,31 @@ function bindEvents(){
         }
       }
 
+      else if(action === 'toggle-color-hidden'){
+        var hcStyle = el.getAttribute('data-style');
+        var hcColor = el.getAttribute('data-color');
+        var hcNowHidden = isColorHidden(hcStyle, hcColor);
+        if(!hcNowHidden){
+          var hcSt = state.structure.find(function(x){ return x.style === hcStyle; });
+          if(hcSt && hcSt.colors.length <= 1){
+            showToast("每個款式至少要保留一個顏色；整個款式都不盤的話請直接刪除款式");
+            return;
+          }
+          if(colorHasRecountTasks(hcStyle, hcColor)){
+            showToast("「"+hcColor+"」還有複盤任務，請先到複盤清單處理或移除後再隱藏");
+            return;
+          }
+          if(!confirm('確定要隱藏「'+hcStyle+' '+hcColor+'」嗎？\n\n隱藏後不會出現在盤點、彙總與匯出，也不會再記錄數字。已填過的數字會保留，取消隱藏就會恢復。')){
+            return;
+          }
+        }
+        setColorHiddenRemote(hcStyle, hcColor, !hcNowHidden); // 不 await：本地已樂觀更新
+        showToast(hcNowHidden ? '已取消隱藏「'+hcColor+'」' : '已隱藏「'+hcColor+'」');
+        var hcKeepY = window.scrollY;
+        render();
+        window.scrollTo(0, hcKeepY);
+      }
+
       else if(action === 'set-style-brand'){
         var styleName = document.getElementById('set-brand-style').value;
         var brandName = document.getElementById('set-brand-name').value.trim();
@@ -5303,6 +5490,8 @@ function bindEvents(){
           if(result && result.ok){
             var item = state.structure.find(function(s){ return s.style === oldName; });
             if(item) item.style = newName;
+            if(state.hiddenColors[oldName]){ state.hiddenColors[newName] = state.hiddenColors[oldName]; delete state.hiddenColors[oldName]; }
+            if(state.hiddenStash[oldName]){ state.hiddenStash[newName] = state.hiddenStash[oldName]; delete state.hiddenStash[oldName]; }
             state.structure = sortStructureByStyle(state.structure);
             var newCounts = {};
             Object.keys(state.counts).forEach(function(k){
@@ -5529,6 +5718,13 @@ function bindEvents(){
     // 批次匯入：選了檔案後自動讀取內容，填進文字框
     app.addEventListener('change', function(ev){
       var t = ev.target;
+      if(t && t.id === 'hide-color-style'){
+        state.hideColorStyle = t.value;
+        var keepY = window.scrollY;
+        render();
+        window.scrollTo(0, keepY); // 重畫後停在原本的位置，不要跳回頁首
+        return;
+      }
       if(t && t.id === 'bulk-import-file' && t.files && t.files[0]){
         var reader = new FileReader();
         reader.onload = function(e){
