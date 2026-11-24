@@ -1597,12 +1597,16 @@ async function confirmRecountRemote(style, color, size, isCorrection){
     originalConfirmedBy: originalConfirmedBy, originalConfirmedAt: originalConfirmedAt
   });
   state.counts[key] = { shelf: shelfVal, stock: stockVal, total: shelfVal + stockVal, countedBy: confirmedBy };
+  // 先讓畫面反映結果，不等後端回應。後端的 confirmRecount 要讀整份盤點快取，慢的時候要好幾秒，
+  // 期間畫面若沒動靜，使用者會以為沒按到、或去按「立即更新」。失敗時下面的 catch 會還原並再重畫一次。
+  render_keepExpanded();
   try{
     await apiPost({ action:"confirmRecount", style:style, color:color, size:size, shelf:shelfVal, stock:stockVal, confirmedBy:confirmedBy, isCorrection: !!isCorrection });
   }catch(e){
     console.error("confirm recount failed", e);
     state.recounts[key] = prevRecount;
     state.counts[key] = prevCount;
+    render_keepExpanded(); // 還原樂觀更新，卡片會重新出現，使用者才知道這筆沒成功
     showToast("確認失敗：" + (e && e.message ? e.message : "請檢查網路"));
     throw e;
   }
