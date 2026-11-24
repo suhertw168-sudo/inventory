@@ -2330,6 +2330,32 @@ function parseNameList(raw){
   return out;
 }
 // 某款式所有顏色用到的尺寸（依出現順序，不重複），給下拉選單用
+// 列表上顯示用：目前看得到的尺寸有幾種。已隱藏的顏色、尺寸都不算，
+// 跟旁邊「N 色」的算法一致，兩個數字才不會對不起來。
+// 各顏色尺寸不一樣時取聯集，例如黑色有 S/M/L、白色有 S/M，就算 3 段。
+function visibleSizeCountOfStyle(st){
+  var seen = {}, n = 0;
+  (st && st.colors || []).forEach(function(c){
+    (c.sizes || []).forEach(function(z){ if(!seen[z]){ seen[z] = true; n++; } });
+  });
+  return n;
+}
+// 匯入檢查用：各顏色的尺寸組合是不是一模一樣。不一樣通常代表匯入時漏了，
+// 例如 12 色應該每色都有 S/M/L/XL，結果白色02 只有 S/M/L。
+// 判斷時用「含已隱藏」的完整資料：刻意隱藏某色的某個尺寸是正常操作，不該被當成漏匯入。
+function styleSizesInconsistent(st){
+  var cols = fullColorsOfStyle(st);
+  if(cols.length < 2) return false;
+  var keyOf = function(c){ return (c.sizes || []).slice().sort().join("\u0001"); };
+  var first = keyOf(cols[0]);
+  return cols.some(function(c){ return keyOf(c) !== first; });
+}
+function styleSizeMetaHtml(st){
+  var n = visibleSizeCountOfStyle(st);
+  if(!styleSizesInconsistent(st)) return n + ' 段尺寸';
+  // 標一顆星就好，不寫字——列表要短。星號＝有顏色的尺寸跟別人不一樣，點進去逐色對。
+  return n + ' 段尺寸<span style="color:var(--accent-deep); font-weight:800;" title="有顏色的尺寸跟其他色不一樣">*</span>';
+}
 function allSizesOfStyle(st){
   var out = [];
   fullColorsOfStyle(st).forEach(function(c){
@@ -3277,7 +3303,7 @@ function renderHome(){
       var pct2 = p.total ? Math.round(p.done/p.total*100) : 0;
       return '<div class="list-row" data-action="open-style" data-style-idx="'+idx+'">'+
         '<div class="left">'+escapeHtml(styleName)+
-        '<div class="meta">'+structure[idx].colors.length+' 色 · 已完成 '+p.done+'/'+p.total+'（'+pct2+'%）</div>'+
+        '<div class="meta">'+structure[idx].colors.length+' 色 · '+styleSizeMetaHtml(structure[idx])+' · 已完成 '+p.done+'/'+p.total+'（'+pct2+'%）</div>'+
         '</div><div class="chev">›</div></div>';
     } else {
       var gp = groupProgress(g, state.counts);
@@ -3339,7 +3365,7 @@ function renderBrandModels(){
     var pct2 = p.total ? Math.round(p.done/p.total*100) : 0;
     return '<div class="list-row" data-action="open-style" data-style-idx="'+idx+'">'+
       '<div class="left">'+escapeHtml(styleName)+
-      '<div class="meta">'+structure[idx].colors.length+' 色 · 已完成 '+p.done+'/'+p.total+'（'+pct2+'%）</div>'+
+      '<div class="meta">'+structure[idx].colors.length+' 色 · '+styleSizeMetaHtml(structure[idx])+' · 已完成 '+p.done+'/'+p.total+'（'+pct2+'%）</div>'+
       '</div><div class="chev">›</div></div>';
   }).join("");
 
