@@ -1336,6 +1336,26 @@ async function fetchPushToken(reg){
   return await firebase.messaging().getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: reg });
 }
 
+// 工具正開著在螢幕上的時候，瀏覽器不會跳鎖屏通知——訊息會直接交給網頁處理。
+// 所以這裡一定要自己接，不然使用者眼前什麼都不會發生（看起來就像推播壞了）。
+var foregroundPushBound = false;
+function listenForegroundPush(){
+  if(foregroundPushBound) return;
+  if(!pushApiAvailable()) return;
+  try{
+    startFirebaseOnce();
+    firebase.messaging().onMessage(function(payload){
+      var n = (payload && payload.notification) || {};
+      pendingPushAlertText = n.body || "請開啟複盤清單查看";
+      // 先去後端撈新任務：撈到了就用「有 N 格指派給你」那個正式的警示（也才有防重複），
+      // 撈不到（例如只是測試推播）才退回用通知本身的文字。
+      try{ syncFromBackend(); }catch(e){}
+      setTimeout(tryShowPendingAssignAlert, 3000);
+    });
+    foregroundPushBound = true;
+  }catch(e){ console.warn("foreground push listen failed", e); }
+}
+
 async function enablePush(){
   if(pushBusy) return;
   var myName = getRecountUserName();
@@ -1354,6 +1374,7 @@ async function enablePush(){
     if(!token){ showToast("沒有取得裝置代碼，請再試一次"); return; }
     await apiPost({ action:"savePushToken", name: myName, token: token, ua: String(navigator.userAgent || "").slice(0,120) });
     setPushSavedToken(token);
+    listenForegroundPush();
     showToast("已開啟鎖屏通知");
   }catch(e){
     console.error("enable push failed", e);
@@ -1367,6 +1388,7 @@ async function enablePush(){
 // 失敗不吵使用者，下次再試。
 async function refreshPushTokenQuietly(){
   if(pushStatus() !== "on") return;
+  listenForegroundPush();
   var myName = getRecountUserName();
   if(!myName) return;
   try{
@@ -1486,6 +1508,7 @@ function myPendingAssignedKeys(){
 // 正在打字（手機鍵盤開著）時不跳，先排隊，等他收起鍵盤再說。
 // 盤點中被彈窗打斷，很容易連帶把還沒送出的那一格數字弄掉，寧可晚幾秒提醒也不要動到數字。
 var pendingAssignAlertKeys = [];
+var pendingPushAlertText = "";   // 前景收到推播、但還沒撈到任務時，用通知本身的文字當備案
 function isTypingNow(){
   var el = document.activeElement;
   if(!el) return false;
@@ -1508,17 +1531,24 @@ function checkNewAssignmentAlert(){
 }
 // 只有在「沒有任何輸入框正在編輯」時才真的跳出來
 function tryShowPendingAssignAlert(){
-  if(pendingAssignAlertKeys.length === 0) return;
-  if(isTypingNow()) return;
+  if(pendingAssignAlertKeys.length === 0 && !pendingPushAlertText) return;
+  if(isTypingNow()) return;   // 打字中一律等，收起鍵盤才跳
   var n = pendingAssignAlertKeys.length;
+  var fallbackText = pendingPushAlertText;
   pendingAssignAlertKeys = [];
-  showNewAssignModal(n);
+  pendingPushAlertText = "";
+  // 有撈到實際任務就用正式文案，兩者只會擇一顯示
+  if(n > 0) showNewAssignModal(n);
+  else showNewAssignModalText(fallbackText);
 }
 function showNewAssignModal(count){
+  showNewAssignModalText('有 ' + count + ' 格指派給你，可以先忙完手上這一格再去處理');
+}
+function showNewAssignModalText(subText){
   var modal = document.getElementById('new-assign-modal');
   if(!modal) return;
   var sub = document.getElementById('new-assign-modal-sub');
-  if(sub) sub.textContent = '有 ' + count + ' 格指派給你，可以先忙完手上這一格再去處理';
+  if(sub) sub.textContent = subText || '';
   modal.style.display = 'flex';
   try{ if(navigator.vibrate) navigator.vibrate([200, 100, 200]); }catch(e){} // Android 會震動；iPhone 不支援，自動略過
 }
