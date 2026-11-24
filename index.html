@@ -446,7 +446,7 @@
   .new-assign-icon{ font-size:36px; line-height:1; margin-bottom:10px; }
   .new-assign-title{ font-size:19px; font-weight:800; color:var(--accent-deep); margin-bottom:8px; }
   .new-assign-sub{ font-size:13px; color:var(--muted); }
-  /* 首頁的鎖屏通知狀態列 */
+  /* 首頁的通知狀態列 */
   .push-row{
     display:flex; align-items:center; justify-content:space-between; gap:10px;
     padding:10px 14px; border:1px solid var(--line); border-radius:12px;
@@ -842,7 +842,7 @@
   <div class="modal-box new-assign-box">
     <button type="button" class="new-assign-close" id="new-assign-modal-close" aria-label="關閉通知">✕</button>
     <div class="new-assign-icon">🔔</div>
-    <div class="new-assign-title">有新複盤任務請查看</div>
+    <div class="new-assign-title" id="new-assign-modal-title">有新複盤任務請查看</div>
     <div class="new-assign-sub" id="new-assign-modal-sub"></div>
   </div>
 </div>
@@ -1347,6 +1347,7 @@ function listenForegroundPush(){
     firebase.messaging().onMessage(function(payload){
       var n = (payload && payload.notification) || {};
       pendingPushAlertText = n.body || "請開啟複盤清單查看";
+      pendingPushAlertTitle = n.title || "";
       // 先去後端撈新任務：撈到了就用「有 N 格指派給你」那個正式的警示（也才有防重複），
       // 撈不到（例如只是測試推播）才退回用通知本身的文字。
       try{ syncFromBackend(); }catch(e){}
@@ -1361,7 +1362,7 @@ async function enablePush(){
   var myName = getRecountUserName();
   if(!myName){ showToast("請先設定你的盤點身分，通知才知道要發給誰"); return; }
   if(isIOSDevice() && !isStandaloneApp()){ showPushHowto(); return; }
-  if(!pushApiAvailable()){ showToast("這個瀏覽器不支援鎖屏通知"); return; }
+  if(!pushApiAvailable()){ showToast("這個瀏覽器不支援通知"); return; }
   pushBusy = true; patchPushRow();
   try{
     var perm = await Notification.requestPermission();
@@ -1375,7 +1376,7 @@ async function enablePush(){
     await apiPost({ action:"savePushToken", name: myName, token: token, ua: String(navigator.userAgent || "").slice(0,120) });
     setPushSavedToken(token);
     listenForegroundPush();
-    showToast("已開啟鎖屏通知");
+    showToast("已開啟通知");
   }catch(e){
     console.error("enable push failed", e);
     showToast("開啟通知失敗：" + (e && e.message ? e.message : "請再試一次"));
@@ -1414,7 +1415,7 @@ async function loadPushDevices(){
 }
 
 function showPushHowto(){
-  alert("iPhone 要先把工具加到主畫面，才收得到鎖屏通知（這是 Apple 的規定）：\n\n" +
+  alert("iPhone 要先把工具加到主畫面，才收得到通知（這是 Apple 的規定）：\n\n" +
         "1. 用 Safari 開這個網址\n" +
         "2. 按下方中間的「分享」\n" +
         "3. 往下找「加入主畫面」→ 加入\n" +
@@ -1465,16 +1466,16 @@ function buildPushRowHtml(){
   var cls = "push-row", text = "", btn = "";
   if(st === "on"){
     cls += " on";
-    text = "🔔 鎖屏通知：已開啟";
+    text = "🔔 通知：已開啟";
   } else if(st === "denied"){
     cls += " warn";
     text = "🔕 通知被手機封鎖了，要到手機的「設定 → 通知」把這個工具的通知打開";
   } else if(st === "needHomeScreen"){
     cls += " warn";
-    text = "🔔 要先把工具加到主畫面，才收得到鎖屏通知";
+    text = "🔔 要先把工具加到主畫面，才收得到通知";
     btn = '<button class="mini-btn" data-action="push-howto">怎麼做</button>';
   } else {
-    text = "🔔 鎖屏通知：尚未開啟";
+    text = "🔔 通知：尚未開啟";
     btn = '<button class="mini-btn" data-action="enable-push">' + (pushBusy ? "處理中…" : "開啟") + '</button>';
   }
   return '<div class="' + cls + '"><span class="push-text">' + text + '</span>' + btn + '</div>';
@@ -1508,7 +1509,8 @@ function myPendingAssignedKeys(){
 // 正在打字（手機鍵盤開著）時不跳，先排隊，等他收起鍵盤再說。
 // 盤點中被彈窗打斷，很容易連帶把還沒送出的那一格數字弄掉，寧可晚幾秒提醒也不要動到數字。
 var pendingAssignAlertKeys = [];
-var pendingPushAlertText = "";   // 前景收到推播、但還沒撈到任務時，用通知本身的文字當備案
+var pendingPushAlertText = "";    // 前景收到推播、但還沒撈到任務時，用通知本身的內文當備案
+var pendingPushAlertTitle = "";   // 同上，標題也跟著推播走，測試推播才不會寫成「有新複盤任務」
 function isTypingNow(){
   var el = document.activeElement;
   if(!el) return false;
@@ -1535,18 +1537,24 @@ function tryShowPendingAssignAlert(){
   if(isTypingNow()) return;   // 打字中一律等，收起鍵盤才跳
   var n = pendingAssignAlertKeys.length;
   var fallbackText = pendingPushAlertText;
+  var fallbackTitle = pendingPushAlertTitle;
   pendingAssignAlertKeys = [];
   pendingPushAlertText = "";
+  pendingPushAlertTitle = "";
   // 有撈到實際任務就用正式文案，兩者只會擇一顯示
   if(n > 0) showNewAssignModal(n);
-  else showNewAssignModalText(fallbackText);
+  else showNewAssignModalText(fallbackText, fallbackTitle);
 }
 function showNewAssignModal(count){
   showNewAssignModalText('有 ' + count + ' 格指派給你，可以先忙完手上這一格再去處理');
 }
-function showNewAssignModalText(subText){
+// titleText 不給就用預設的「有新複盤任務請查看」。測試推播會帶自己的標題過來，
+// 免得大家在設定階段看到「有新複盤任務」，跑去複盤清單找不存在的任務。
+function showNewAssignModalText(subText, titleText){
   var modal = document.getElementById('new-assign-modal');
   if(!modal) return;
+  var ttl = document.getElementById('new-assign-modal-title');
+  if(ttl) ttl.textContent = titleText || '有新複盤任務請查看';
   var sub = document.getElementById('new-assign-modal-sub');
   if(sub) sub.textContent = subText || '';
   modal.style.display = 'flex';
@@ -3589,7 +3597,7 @@ function renderSetup(){
     '</div>'+
     '<div class="panel">'+
       '<h2>推播通知</h2>'+
-      '<p class="sub">每次盤點前先看這裡：顯示「尚未登記」的人收不到鎖屏通知，請他打開工具、在首頁按「開啟」。iPhone 要先加到主畫面並從圖示開啟。按「測試」會立刻發一則通知給那個人。</p>'+
+      '<p class="sub">每次盤點前先看這裡：顯示「尚未登記」的人收不到通知，請他打開工具、在首頁按「開啟」。iPhone 要先加到主畫面並從圖示開啟。按「測試」會立刻發一則通知給那個人。</p>'+
       '<div id="push-device-rows">'+buildPushDeviceRowsHtml()+'</div>'+
     '</div>'+
     '<div class="panel">'+
