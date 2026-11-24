@@ -1289,6 +1289,15 @@ function myPendingAssignedKeys(){
     return !!r && !r.confirmed;
   });
 }
+// 正在打字（手機鍵盤開著）時不跳，先排隊，等他收起鍵盤再說。
+// 盤點中被彈窗打斷，很容易連帶把還沒送出的那一格數字弄掉，寧可晚幾秒提醒也不要動到數字。
+var pendingAssignAlertKeys = [];
+function isTypingNow(){
+  var el = document.activeElement;
+  if(!el) return false;
+  var tag = (el.tagName || "").toUpperCase();
+  return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable === true;
+}
 function checkNewAssignmentAlert(){
   var mine = myPendingAssignedKeys();
   var alerted = getAlertedAssignKeys();
@@ -1296,8 +1305,20 @@ function checkNewAssignmentAlert(){
   // 把紀錄換成「目前還是我的」那幾格：改派、取消、已回寫的會被清掉，名單不會無限長大，
   // 而且同一格之後若又被指派給我，還能正常再提醒一次
   setAlertedAssignKeys(mine);
-  if(fresh.length === 0) return;
-  showNewAssignModal(fresh.length);
+  fresh.forEach(function(k){
+    if(pendingAssignAlertKeys.indexOf(k) === -1) pendingAssignAlertKeys.push(k);
+  });
+  // 排隊中的任務若已經被改派或回寫完成，就不用再提醒
+  pendingAssignAlertKeys = pendingAssignAlertKeys.filter(function(k){ return mine.indexOf(k) !== -1; });
+  tryShowPendingAssignAlert();
+}
+// 只有在「沒有任何輸入框正在編輯」時才真的跳出來
+function tryShowPendingAssignAlert(){
+  if(pendingAssignAlertKeys.length === 0) return;
+  if(isTypingNow()) return;
+  var n = pendingAssignAlertKeys.length;
+  pendingAssignAlertKeys = [];
+  showNewAssignModal(n);
 }
 function showNewAssignModal(count){
   var modal = document.getElementById('new-assign-modal');
@@ -1315,6 +1336,12 @@ function closeNewAssignModal(){
   var closeBtn = document.getElementById('new-assign-modal-close');
   if(closeBtn){ closeBtn.addEventListener('click', function(){ closeNewAssignModal(); }); }
   // 刻意不綁「點背景關閉」：規格要求一定要按下那顆叉叉才關得掉
+
+  // 收起鍵盤（輸入框失焦）之後，再把排隊中的提醒跳出來。
+  // 延遲一下是為了讓失焦存檔先跑完——數字先收進算式、先送出存檔，提醒才不會卡在中間
+  document.addEventListener('focusout', function(){
+    setTimeout(tryShowPendingAssignAlert, 400);
+  }, true);
 })();
 
 function setRecountUserName(name){
