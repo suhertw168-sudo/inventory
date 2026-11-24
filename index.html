@@ -14,6 +14,9 @@
 <meta name="apple-mobile-web-app-title" content="盤點工具">
 <meta name="mobile-web-app-capable" content="yes">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
+<!-- 鎖屏通知用的 Firebase SDK。版本固定住，避免哪天自動升版改了 API 就壞掉 -->
+<script src="https://www.gstatic.com/firebasejs/13.2.0/firebase-app-compat.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/13.2.0/firebase-messaging-compat.js" defer></script>
 <style>
   :root{
     --ink:#1b1f23;
@@ -443,6 +446,15 @@
   .new-assign-icon{ font-size:36px; line-height:1; margin-bottom:10px; }
   .new-assign-title{ font-size:19px; font-weight:800; color:var(--accent-deep); margin-bottom:8px; }
   .new-assign-sub{ font-size:13px; color:var(--muted); }
+  /* 首頁的鎖屏通知狀態列 */
+  .push-row{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:10px 14px; border:1px solid var(--line); border-radius:12px;
+    background:#fcfbf8; font-size:13px; color:var(--muted);
+  }
+  .push-row.on{ border-color:#cfe6d7; background:#f7fbf8; color:var(--good); }
+  .push-row.warn{ border-color:#e3a89a; background:#fdf3ef; color:var(--accent-deep); }
+  .push-row .push-text{ min-width:0; overflow-wrap:break-word; }
   .modal-textarea{
     display:block; width:100%; min-height:130px; font-size:15px; padding:12px;
     border:1.5px solid var(--line); border-radius:10px; font-family:inherit;
@@ -857,6 +869,7 @@ var state = {
   hiddenStash: {},      // {款式: [{idx, name, sizes}]} 被隱藏顏色的完整資料與原本的位置，取消隱藏時原樣放回
   hiddenSizes: {},      // {款式: {顏色: {尺寸: true}}} 單獨隱藏的尺寸
   hiddenSizeStash: {},  // {款式: {顏色: [{idx, size}]}} 被隱藏尺寸與原本的位置
+  pushDevices: null,    // 管理頁「推播通知」面板用：[{name, token, updatedAt, ua}]，null = 還沒載入
   setupOpen: null,      // 管理用設定頁各群組／區塊的展開狀態，見 organizeSetupPanels()
   hideColorStyle: "",   // 管理用設定「隱藏顏色」面板目前選的款式
   counts: {},           // key "style|color|size" -> {shelf, stock}
@@ -1264,6 +1277,187 @@ var RECOUNT_USERNAME_KEY = "recountUserName";
 function getRecountUserName(){
   try{ return (localStorage.getItem(RECOUNT_USERNAME_KEY) || "").trim(); }catch(e){ return ""; }
 }
+// ---------- 鎖屏通知（Firebase Cloud Messaging） ----------
+// 手機鎖屏、工具沒開著時也能跳通知。流程：這台裝置先跟瀏覽器要通知權限，拿到一組「裝置代碼」
+// 送回後端存起來；主管指派複盤任務時，後端再請 FCM 用那組代碼發送。
+// iPhone 的限制是 Apple 訂的：一定要先「加入主畫面」，而且要從桌面圖示開啟，才要得到權限。
+var FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBOsZKGSVr6OWmcOjTftWFyX9_9ODg4blY",
+  authDomain: "inventory-push-996ee.firebaseapp.com",
+  projectId: "inventory-push-996ee",
+  storageBucket: "inventory-push-996ee.firebasestorage.app",
+  messagingSenderId: "979020180890",
+  appId: "1:979020180890:web:08cc8c3ced8edfd2885e23"
+};
+var FCM_VAPID_KEY = "BPZ7Fx9YAQtiD_XK6XWdZOBCYJ_jWHVaA5oxuhsiT21XwOR-HfW-FwIYV2L_EbbHg2KEp5gQhGY5p9iOOW7b9Kk";
+var PUSH_TOKEN_KEY = "pushDeviceToken";
+var pushBusy = false;
+var firebaseStarted = false;
+
+function pushSavedToken(){ try{ return localStorage.getItem(PUSH_TOKEN_KEY) || ""; }catch(e){ return ""; } }
+function setPushSavedToken(t){
+  try{ if(t) localStorage.setItem(PUSH_TOKEN_KEY, t); else localStorage.removeItem(PUSH_TOKEN_KEY); }catch(e){}
+}
+function isIOSDevice(){ return /iPad|iPhone|iPod/.test(navigator.userAgent || ""); }
+function isStandaloneApp(){
+  try{
+    return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+  }catch(e){ return false; }
+}
+function pushApiAvailable(){
+  return typeof firebase !== "undefined" && firebase.messaging
+    && ("serviceWorker" in navigator) && ("Notification" in window) && ("PushManager" in window);
+}
+function pushPermission(){
+  try{ return (typeof Notification !== "undefined") ? Notification.permission : "unsupported"; }catch(e){ return "unsupported"; }
+}
+// 這台裝置目前的狀態，首頁那一列跟按鈕都看它
+function pushStatus(){
+  if(isIOSDevice() && !isStandaloneApp()) return "needHomeScreen";
+  if(!pushApiAvailable()) return "unsupported";
+  if(pushPermission() === "denied") return "denied";
+  if(pushPermission() === "granted" && pushSavedToken()) return "on";
+  return "off";
+}
+function startFirebaseOnce(){
+  if(firebaseStarted) return;
+  firebase.initializeApp(FIREBASE_CONFIG);
+  firebaseStarted = true;
+}
+// Service Worker 跟 index.html 放同一層，scope 也指定同一層——
+// GitHub Pages 的網址是 .../inventory/，不是網域根目錄，不指定 scope 會註冊失敗
+async function registerPushSw(){
+  var reg = await navigator.serviceWorker.register("firebase-messaging-sw.js", { scope: "./" });
+  await navigator.serviceWorker.ready;
+  return reg;
+}
+async function fetchPushToken(reg){
+  startFirebaseOnce();
+  return await firebase.messaging().getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: reg });
+}
+
+async function enablePush(){
+  if(pushBusy) return;
+  var myName = getRecountUserName();
+  if(!myName){ showToast("請先設定你的盤點身分，通知才知道要發給誰"); return; }
+  if(isIOSDevice() && !isStandaloneApp()){ showPushHowto(); return; }
+  if(!pushApiAvailable()){ showToast("這個瀏覽器不支援鎖屏通知"); return; }
+  pushBusy = true; patchPushRow();
+  try{
+    var perm = await Notification.requestPermission();
+    if(perm !== "granted"){
+      showToast(perm === "denied" ? "通知被拒絕了，要到手機設定裡才能改回來" : "沒有取得通知權限");
+      return;
+    }
+    var reg = await registerPushSw();
+    var token = await fetchPushToken(reg);
+    if(!token){ showToast("沒有取得裝置代碼，請再試一次"); return; }
+    await apiPost({ action:"savePushToken", name: myName, token: token, ua: String(navigator.userAgent || "").slice(0,120) });
+    setPushSavedToken(token);
+    showToast("已開啟鎖屏通知");
+  }catch(e){
+    console.error("enable push failed", e);
+    showToast("開啟通知失敗：" + (e && e.message ? e.message : "請再試一次"));
+  }finally{
+    pushBusy = false; patchPushRow();
+  }
+}
+
+// 已經開過的裝置：開啟工具時悄悄確認代碼有沒有換過（代碼會自己輪替），換了就重新登記。
+// 失敗不吵使用者，下次再試。
+async function refreshPushTokenQuietly(){
+  if(pushStatus() !== "on") return;
+  var myName = getRecountUserName();
+  if(!myName) return;
+  try{
+    var reg = await registerPushSw();
+    var token = await fetchPushToken(reg);
+    if(token && token !== pushSavedToken()){
+      await apiPost({ action:"savePushToken", name: myName, token: token, ua: String(navigator.userAgent || "").slice(0,120) });
+      setPushSavedToken(token);
+    }
+  }catch(e){ console.warn("refresh push token failed", e); }
+}
+
+// 管理頁要看「誰收得到通知」時才去拿，不放進每 30 秒的同步，避免拖慢大家
+async function loadPushDevices(){
+  try{
+    var list = await apiGet("pushDevices");
+    state.pushDevices = Array.isArray(list) ? list : [];
+  }catch(e){
+    console.error("load push devices failed", e);
+    state.pushDevices = [];
+  }
+  patchPushDeviceRows();
+}
+
+function showPushHowto(){
+  alert("iPhone 要先把工具加到主畫面，才收得到鎖屏通知（這是 Apple 的規定）：\n\n" +
+        "1. 用 Safari 開這個網址\n" +
+        "2. 按下方中間的「分享」\n" +
+        "3. 往下找「加入主畫面」→ 加入\n" +
+        "4. 回到桌面，點剛剛出現的圖示開啟\n" +
+        "5. 再按一次「開啟」通知\n\n" +
+        "Android 用 Chrome 直接按「開啟」就可以。");
+}
+
+// 只換通知列那一小塊。整頁 render() 會把使用者正在打字的輸入框清掉，
+// 推播是背景作業，絕對不能為了更新一行字而冒這個風險。
+function patchPushRow(){
+  var wrap = document.getElementById("push-row-wrap");
+  if(wrap) wrap.innerHTML = buildPushRowHtml();
+}
+function buildPushDeviceRowsHtml(){
+  if(state.pushDevices === null) return '<p class="sub">讀取中…</p>';
+  if(state.people.length === 0) return emptyStateHtml('還沒有人員名單', '先到下面「人員名單管理」加入人員');
+  var deviceCountByName = {};
+  state.pushDevices.forEach(function(d){
+    var nm = String(d.name || "").trim();
+    if(!nm) return;
+    deviceCountByName[nm] = (deviceCountByName[nm] || 0) + 1;
+  });
+  var html = state.people.map(function(nm){
+    var cnt = deviceCountByName[nm] || 0;
+    var badge = cnt > 0
+      ? '<span style="background:#e8f5ec; color:var(--good); font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">已登記 '+cnt+' 台</span>'
+      : '<span style="background:#fdf3ef; color:var(--accent-deep); font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">尚未登記</span>';
+    return '<div class="list-row">'+
+      '<div class="left">'+escapeHtml(nm)+badge+'</div>'+
+      (cnt > 0 ? '<button class="mini-btn" data-action="test-push" data-name="'+escapeHtml(nm)+'">測試</button>' : '')+
+    '</div>';
+  }).join("");
+  var unknown = Object.keys(deviceCountByName).filter(function(nm){ return state.people.indexOf(nm) === -1; });
+  if(unknown.length){
+    html += '<p class="sub" style="margin-top:10px;">另外有已登記、但不在人員名單裡的名字：'+escapeHtml(unknown.join("、"))+'（可能是改名或已離職，可以不用理會）</p>';
+  }
+  return html;
+}
+function patchPushDeviceRows(){
+  var box = document.getElementById("push-device-rows");
+  if(box) box.innerHTML = buildPushDeviceRowsHtml();
+}
+
+function buildPushRowHtml(){
+  var st = pushStatus();
+  if(st === "unsupported") return "";
+  var cls = "push-row", text = "", btn = "";
+  if(st === "on"){
+    cls += " on";
+    text = "🔔 鎖屏通知：已開啟";
+  } else if(st === "denied"){
+    cls += " warn";
+    text = "🔕 通知被手機封鎖了，要到手機的「設定 → 通知」把這個工具的通知打開";
+  } else if(st === "needHomeScreen"){
+    cls += " warn";
+    text = "🔔 要先把工具加到主畫面，才收得到鎖屏通知";
+    btn = '<button class="mini-btn" data-action="push-howto">怎麼做</button>';
+  } else {
+    text = "🔔 鎖屏通知：尚未開啟";
+    btn = '<button class="mini-btn" data-action="enable-push">' + (pushBusy ? "處理中…" : "開啟") + '</button>';
+  }
+  return '<div class="' + cls + '"><span class="push-text">' + text + '</span>' + btn + '</div>';
+}
+
 // ---------- 新複盤任務警示 ----------
 // 被指派的人多半正在盤點，而盤點畫面刻意不隨背景同步重畫，所以這個警示跟其他彈窗一樣放在 #app 之外，
 // 由同步流程直接開關 DOM，不經過 render()，才不會打斷他正在填的那一格。
@@ -2257,6 +2451,10 @@ async function init(){
   startAutoSync(); // 啟動背景自動同步
   loadErpMaps();   // 背景讀取 ERP 對照表，不等待
   checkNewAssignmentAlert(); // 開啟時先看有沒有還沒提醒過的任務
+  // Firebase SDK 是 defer 載入的，等它到位再確認裝置代碼；純背景作業，失敗不影響使用
+  // Firebase SDK 是 defer 載入的，等它到位再確認裝置代碼，並補上首頁的通知列。
+  // 這裡刻意不用 render()：使用者這時可能已經在填數字了，整頁重畫會把輸入框清掉。
+  setTimeout(function(){ refreshPushTokenQuietly(); patchPushRow(); }, 2500);
 }
 
 // 自動同步：每 SYNC_INTERVAL_MS 毫秒去後端拉一次最新資料，更新其他人填的數字到本地畫面
@@ -2594,7 +2792,7 @@ function styleProgress(style, counts){
 var SETUP_GROUPS = [
   { key:"g-style",  title:"款式管理",   panels:["目前的款式","編輯款式內容","新增單一款式","重新命名款式","批次匯入"] },
   { key:"g-brand",  title:"品牌設定",   panels:["設定款式所屬品牌","調整品牌顯示順序","品牌負責人"] },
-  { key:"g-people", title:"人員與權限", panels:["人員名單管理","主管設定","Key in 人員"] },
+  { key:"g-people", title:"人員與權限", panels:["人員名單管理","主管設定","Key in 人員","推播通知"] },
   { key:"g-data",   title:"資料維護",   panels:["整理原始資料","清除全部資料"], danger:true }
 ];
 function setupPanelMeta(name){
@@ -3029,6 +3227,7 @@ function renderHome(){
   '<main>'+
     '<button class="btn secondary" data-action="goto-summary">查看彙總 / 匯出貼回 Sheet</button>'+
     recountEntryHtml+
+    '<div id="push-row-wrap">'+buildPushRowHtml()+'</div>'+
     '<div class="panel">'+
       '<h2>選擇品牌</h2>'+
       '<p class="sub">點品牌進入選型號，再逐色逐尺寸填寫，資料即時同步，多人可同時進行不同款式或顏色。</p>'+
@@ -3100,6 +3299,8 @@ function renderSetup(){
       '<button class="icon-btn" data-action="delete-style" data-style-idx="'+idx+'" style="color:var(--accent-deep)">刪除</button>'+
     '</div>';
   }).join("");
+
+  // 「推播通知」面板內容由 buildPushDeviceRowsHtml() 產生，這裡不再組字串
 
   // 「隱藏顏色」面板：選一個款式，列出它全部的顏色（含已隱藏的），每色一顆切換鈕
   var hideStyle = structure.find(function(st){ return st.style === state.hideColorStyle; }) || structure[0] || null;
@@ -3355,6 +3556,11 @@ function renderSetup(){
         '<input type="text" id="rename-new" placeholder="例如：76000">'+
       '</div>'+
       '<button class="btn" data-action="rename-style">重新命名</button>'+
+    '</div>'+
+    '<div class="panel">'+
+      '<h2>推播通知</h2>'+
+      '<p class="sub">每次盤點前先看這裡：顯示「尚未登記」的人收不到鎖屏通知，請他打開工具、在首頁按「開啟」。iPhone 要先加到主畫面並從圖示開啟。按「測試」會立刻發一則通知給那個人。</p>'+
+      '<div id="push-device-rows">'+buildPushDeviceRowsHtml()+'</div>'+
     '</div>'+
     '<div class="panel">'+
       '<h2>人員名單管理</h2>'+
@@ -5241,7 +5447,9 @@ function bindEvents(){
         }
         state.view = "setup";
         state.setupOpen = null; // 每次進來都回到預設：只展開「款式管理」
+        state.pushDevices = null;
         render();
+        loadPushDevices(); // 背景載入推播裝置狀態，不擋畫面
       }
 
       else if(action === 'setup-toggle'){
@@ -5254,6 +5462,32 @@ function bindEvents(){
         state.setupOpen[stKey] = stNow;
       }
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
+
+      else if(action === 'test-push'){
+        var tpName = el.getAttribute('data-name');
+        el.disabled = true; el.textContent = '發送中…';
+        try{
+          var tpRes = await apiPost({ action:"testPush", name: tpName });
+          var rr = (tpRes && tpRes.result) || {};
+          if(rr.sent > 0){
+            showToast('已發送給「'+tpName+'」'+(rr.removed ? '（有 '+rr.removed+' 台已失效，已移除）' : ''));
+          } else {
+            showToast('發送失敗：' + (rr.error || '請確認服務帳戶金鑰已設定'));
+          }
+        }catch(e){
+          showToast('發送失敗：' + (e && e.message ? e.message : '請檢查網路'));
+        }
+        el.disabled = false; el.textContent = '測試';
+        loadPushDevices();
+      }
+
+      else if(action === 'enable-push'){
+        await enablePush();
+      }
+
+      else if(action === 'push-howto'){
+        showPushHowto();
+      }
 
       else if(action === 'goto-recount'){
         state.view = "recount"; state.recountFilter = ""; state.recountBrandFilter = ""; state.recountStyleFilter = "";
@@ -5358,6 +5592,10 @@ function bindEvents(){
           return assignRecountRemote(kParts[0], kParts[1], kParts[2], state.assignSelectedName);
         }));
         showToast('已指派 '+keysToAssign.length+' 格給「'+state.assignSelectedName+'」');
+        // 推播給被指派的人。整批只發一則，不會每格跳一次；失敗不影響指派本身
+        try{
+          await apiPost({ action:"notifyAssignee", name: state.assignSelectedName, count: keysToAssign.length });
+        }catch(e){ console.warn("notify assignee failed", e); }
         state.assignChecked = {};
         render();
       }
