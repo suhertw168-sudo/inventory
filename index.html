@@ -1362,6 +1362,7 @@ async function enablePush(){
   var myName = getRecountUserName();
   if(!myName){ showToast("請先設定你的盤點身分，通知才知道要發給誰"); return; }
   if(isIOSDevice() && !isStandaloneApp()){ showPushHowto(); return; }
+  if(!confirm('要把通知登記給「'+myName+'」嗎？\n\n通知是綁這台手機的。請確認這是你自己的手機，而且上面的名字是你本人；\n幫別人開會讓他的通知全部跑到這支手機來。')) return;
   if(!pushApiAvailable()){ showToast("這個瀏覽器不支援通知"); return; }
   pushBusy = true; patchPushRow();
   try{
@@ -1430,34 +1431,79 @@ function patchPushRow(){
   var wrap = document.getElementById("push-row-wrap");
   if(wrap) wrap.innerHTML = buildPushRowHtml();
 }
+// 裝置資訊只取「看得懂的那一點」：機型跟登記時間，足夠讓管理員認出是誰的哪一支。
+function pushDeviceLabel(ua){
+  var t = String(ua || "");
+  if(/iPhone/i.test(t)) return "iPhone";
+  if(/iPad/i.test(t)) return "iPad";
+  if(/Android/i.test(t)) return "Android";
+  if(/Macintosh|Windows/i.test(t)) return "電腦";
+  return "其他裝置";
+}
+function pushDeviceWhen(v){
+  if(!v) return "";
+  var d = new Date(v);
+  if(isNaN(d.getTime())) return "";
+  return (d.getMonth()+1) + "/" + d.getDate() + " " + ("0"+d.getHours()).slice(-2) + ":" + ("0"+d.getMinutes()).slice(-2);
+}
+function pushDeviceSubRows(devices){
+  return devices.map(function(d){
+    var when = pushDeviceWhen(d.updatedAt);
+    return '<div class="list-row" style="padding-left:16px;">'+
+      '<div class="left"><span class="sub">📱 '+escapeHtml(pushDeviceLabel(d.ua))+(when ? '　登記於 '+escapeHtml(when) : '')+'</span></div>'+
+      '<button class="mini-btn" data-action="unbind-push" data-token="'+escapeHtml(String(d.token || ""))+'" data-who="'+escapeHtml(String(d.name || ""))+'" style="color:var(--accent-deep)">解除</button>'+
+    '</div>';
+  }).join("");
+}
 function buildPushDeviceRowsHtml(){
   if(state.pushDevices === null) return '<p class="sub">讀取中…</p>';
   if(state.people.length === 0) return emptyStateHtml('還沒有人員名單', '先到下面「人員名單管理」加入人員');
-  var deviceCountByName = {};
+  var byName = {};
   state.pushDevices.forEach(function(d){
     var nm = String(d.name || "").trim();
     if(!nm) return;
-    deviceCountByName[nm] = (deviceCountByName[nm] || 0) + 1;
+    (byName[nm] = byName[nm] || []).push(d);
   });
   var html = state.people.map(function(nm){
-    var cnt = deviceCountByName[nm] || 0;
-    var badge = cnt > 0
-      ? '<span style="background:#e8f5ec; color:var(--good); font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">已登記 '+cnt+' 台</span>'
+    var list = byName[nm] || [];
+    var badge = list.length > 0
+      ? '<span style="background:#e8f5ec; color:var(--good); font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">已登記 '+list.length+' 台</span>'
       : '<span style="background:#fdf3ef; color:var(--accent-deep); font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">尚未登記</span>';
     return '<div class="list-row">'+
-      '<div class="left">'+escapeHtml(nm)+badge+'</div>'+
-      (cnt > 0 ? '<button class="mini-btn" data-action="test-push" data-name="'+escapeHtml(nm)+'">測試</button>' : '')+
-    '</div>';
+        '<div class="left">'+escapeHtml(nm)+badge+'</div>'+
+        (list.length > 0 ? '<button class="mini-btn" data-action="test-push" data-name="'+escapeHtml(nm)+'">測試</button>' : '')+
+      '</div>'+
+      pushDeviceSubRows(list);
   }).join("");
-  var unknown = Object.keys(deviceCountByName).filter(function(nm){ return state.people.indexOf(nm) === -1; });
+  // 不在人員名單裡的名字：通常就是綁錯或改過名，這裡也要能解除，不然清不掉
+  var unknown = Object.keys(byName).filter(function(nm){ return state.people.indexOf(nm) === -1; });
   if(unknown.length){
-    html += '<p class="sub" style="margin-top:10px;">另外有已登記、但不在人員名單裡的名字：'+escapeHtml(unknown.join("、"))+'（可能是改名或已離職，可以不用理會）</p>';
+    html += '<p class="sub" style="margin-top:12px;">下面這些名字已登記裝置，但不在人員名單裡（可能是綁錯或改過名），確認不需要就按「解除」：</p>';
+    html += unknown.map(function(nm){
+      return '<div class="list-row"><div class="left">'+escapeHtml(nm)+
+        '<span style="background:#fdf3ef; color:var(--accent-deep); font-size:11px; padding:2px 7px; border-radius:6px; font-weight:700; margin-left:6px;">不在名單</span></div></div>'+
+        pushDeviceSubRows(byName[nm]);
+    }).join("");
   }
   return html;
 }
 function patchPushDeviceRows(){
   var box = document.getElementById("push-device-rows");
   if(box) box.innerHTML = buildPushDeviceRowsHtml();
+}
+
+// 首頁的身分列。通知是綁「這台手機 + 當下的身分」，所以按「開啟」的地方一定要看得到自己是誰，
+// 不然很容易在別人的手機上幫忙開，結果通知全跑到那支手機。
+function buildIdentityBarHtml(){
+  var nm = getRecountUserName();
+  return '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 14px; margin-bottom:8px; background:#fcfbf8; border:1px solid ' + (nm ? 'var(--line)' : 'var(--accent)') + '; border-radius:10px; font-size:12px;">'+
+      '<span style="color:var(--muted); min-width:0; overflow-wrap:break-word;">你的盤點身分：<strong style="color:' + (nm ? 'var(--ink)' : 'var(--accent-deep)') + ';">'+(nm ? escapeHtml(nm) : '尚未設定')+'</strong></span>'+
+      '<button class="mini-btn" data-action="change-recount-username">'+(nm ? '改名字' : '設定名字')+'</button>'+
+    '</div>';
+}
+function patchIdentityBar(){
+  var wrap = document.getElementById("identity-bar-wrap");
+  if(wrap) wrap.innerHTML = buildIdentityBarHtml();
 }
 
 function buildPushRowHtml(){
@@ -3265,6 +3311,7 @@ function renderHome(){
   '<main>'+
     '<button class="btn secondary" data-action="goto-summary">查看彙總 / 匯出貼回 Sheet</button>'+
     recountEntryHtml+
+    '<div id="identity-bar-wrap">'+buildIdentityBarHtml()+'</div>'+
     '<div id="push-row-wrap">'+buildPushRowHtml()+'</div>'+
     '<div class="panel">'+
       '<h2>選擇品牌</h2>'+
@@ -3597,7 +3644,7 @@ function renderSetup(){
     '</div>'+
     '<div class="panel">'+
       '<h2>推播通知</h2>'+
-      '<p class="sub">每次盤點前先看這裡：顯示「尚未登記」的人收不到通知，請他打開工具、在首頁按「開啟」。iPhone 要先加到主畫面並從圖示開啟。按「測試」會立刻發一則通知給那個人。</p>'+
+      '<p class="sub">每次盤點前先看這裡：顯示「尚未登記」的人收不到通知，請他打開工具、在首頁按「開啟」。iPhone 要先加到主畫面並從圖示開啟。按「測試」會立刻發一則通知給那個人。綁錯手機的話，按那台裝置的「解除」就會取消登記，請本人重新在自己手機上按一次「開啟」。</p>'+
       '<div id="push-device-rows">'+buildPushDeviceRowsHtml()+'</div>'+
     '</div>'+
     '<div class="panel">'+
@@ -5501,6 +5548,23 @@ function bindEvents(){
       }
       else if(action === 'goto-summary'){ state.view = "summary"; render(); }
 
+      else if(action === 'unbind-push'){
+        var ubToken = el.getAttribute('data-token') || "";
+        var ubWho = el.getAttribute('data-who') || "";
+        if(!ubToken) return;
+        if(!confirm('確定要解除「'+ubWho+'」這台裝置的通知登記嗎？\n\n解除後這台手機就收不到通知了，要本人重新在自己的手機上按一次「開啟」才會再收到。')) return;
+        el.disabled = true; el.textContent = '處理中…';
+        try{
+          await apiPost({ action:"deletePushToken", token: ubToken });
+          // 解除的如果正好是「這台手機自己」，本機記的代碼也要清掉，首頁才會變回「尚未開啟」
+          if(pushSavedToken() === ubToken){ setPushSavedToken(""); patchPushRow(); }
+          await loadPushDevices();
+          showToast('已解除「'+ubWho+'」的一台裝置');
+        }catch(e){
+          showToast('解除失敗：' + (e && e.message ? e.message : '請檢查網路'));
+          el.disabled = false; el.textContent = '解除';
+        }
+      }
       else if(action === 'test-push'){
         var tpName = el.getAttribute('data-name');
         el.disabled = true; el.textContent = '發送中…';
