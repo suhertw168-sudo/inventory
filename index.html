@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>盤點工具</title>
+<!-- 加到主畫面：有了 manifest 跟圖示，同仁把網址加到手機主畫面後，會像一般 App 一樣全螢幕開啟，
+     不會有網址列。這幾個檔案要跟 index.html 放在 GitHub 的同一層。 -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#c1572d">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="盤點工具">
+<meta name="mobile-web-app-capable" content="yes">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
 <style>
   :root{
@@ -418,6 +427,22 @@
     box-shadow:0 8px 32px rgba(0,0,0,0.3);
   }
   .modal-title{ font-size:15px; font-weight:800; color:var(--ink); margin-bottom:12px; }
+  /* 新複盤任務警示：畫面正中央，只有右上角一顆叉叉 */
+  #new-assign-modal{ z-index:60; }
+  #new-assign-modal .new-assign-box{
+    position:relative; max-width:320px; text-align:center;
+    padding:28px 24px 24px; border:2px solid var(--accent);
+  }
+  .new-assign-close{
+    position:absolute; top:6px; right:6px;
+    width:40px; height:40px; padding:0;
+    border:none; background:none; font-size:20px; line-height:1;
+    color:var(--muted); font-family:inherit; cursor:pointer; border-radius:10px;
+  }
+  .new-assign-close:active{ background:#f1ece1; color:var(--ink); }
+  .new-assign-icon{ font-size:36px; line-height:1; margin-bottom:10px; }
+  .new-assign-title{ font-size:19px; font-weight:800; color:var(--accent-deep); margin-bottom:8px; }
+  .new-assign-sub{ font-size:13px; color:var(--muted); }
   .modal-textarea{
     display:block; width:100%; min-height:130px; font-size:15px; padding:12px;
     border:1.5px solid var(--line); border-radius:10px; font-family:inherit;
@@ -796,6 +821,17 @@
       <button type="button" class="btn secondary" id="recount-progress-modal-close">關閉</button>
       <button type="button" class="btn" id="recount-progress-modal-relog-btn" style="display:none;">完成重登</button>
     </div>
+  </div>
+</div>
+
+<!-- 新複盤任務警示：一樣放在 #app 之外，所以正在盤點（counting 刻意不隨同步重畫）時也跳得出來。
+     只有一顆叉叉，而且刻意不做「點背景關閉」，必須按下叉叉才會消失 -->
+<div class="modal-overlay" id="new-assign-modal">
+  <div class="modal-box new-assign-box">
+    <button type="button" class="new-assign-close" id="new-assign-modal-close" aria-label="關閉通知">✕</button>
+    <div class="new-assign-icon">🔔</div>
+    <div class="new-assign-title">有新複盤任務請查看</div>
+    <div class="new-assign-sub" id="new-assign-modal-sub"></div>
   </div>
 </div>
 
@@ -1228,6 +1264,59 @@ var RECOUNT_USERNAME_KEY = "recountUserName";
 function getRecountUserName(){
   try{ return (localStorage.getItem(RECOUNT_USERNAME_KEY) || "").trim(); }catch(e){ return ""; }
 }
+// ---------- 新複盤任務警示 ----------
+// 被指派的人多半正在盤點，而盤點畫面刻意不隨背景同步重畫，所以這個警示跟其他彈窗一樣放在 #app 之外，
+// 由同步流程直接開關 DOM，不經過 render()，才不會打斷他正在填的那一格。
+// 「已經提醒過哪些格子」記在這台手機的 localStorage：同一筆任務不會每 30 秒跳一次，重新整理也不會重跳。
+var ALERTED_ASSIGN_KEY = "alertedAssignKeys";
+function getAlertedAssignKeys(){
+  try{
+    var raw = localStorage.getItem(ALERTED_ASSIGN_KEY);
+    var arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.map(String) : [];
+  }catch(e){ return []; }
+}
+function setAlertedAssignKeys(keys){
+  try{ localStorage.setItem(ALERTED_ASSIGN_KEY, JSON.stringify(keys)); }catch(e){}
+}
+// 目前指派給我、而且還沒回寫完成的格子
+function myPendingAssignedKeys(){
+  var myName = getRecountUserName();
+  if(!myName) return [];
+  return Object.keys(state.assignments || {}).filter(function(k){
+    if(String(state.assignments[k] || "").trim() !== myName) return false;
+    var r = (state.recounts || {})[k];
+    return !!r && !r.confirmed;
+  });
+}
+function checkNewAssignmentAlert(){
+  var mine = myPendingAssignedKeys();
+  var alerted = getAlertedAssignKeys();
+  var fresh = mine.filter(function(k){ return alerted.indexOf(k) === -1; });
+  // 把紀錄換成「目前還是我的」那幾格：改派、取消、已回寫的會被清掉，名單不會無限長大，
+  // 而且同一格之後若又被指派給我，還能正常再提醒一次
+  setAlertedAssignKeys(mine);
+  if(fresh.length === 0) return;
+  showNewAssignModal(fresh.length);
+}
+function showNewAssignModal(count){
+  var modal = document.getElementById('new-assign-modal');
+  if(!modal) return;
+  var sub = document.getElementById('new-assign-modal-sub');
+  if(sub) sub.textContent = '有 ' + count + ' 格指派給你，可以先忙完手上這一格再去處理';
+  modal.style.display = 'flex';
+  try{ if(navigator.vibrate) navigator.vibrate([200, 100, 200]); }catch(e){} // Android 會震動；iPhone 不支援，自動略過
+}
+function closeNewAssignModal(){
+  var modal = document.getElementById('new-assign-modal');
+  if(modal) modal.style.display = 'none';
+}
+(function(){
+  var closeBtn = document.getElementById('new-assign-modal-close');
+  if(closeBtn){ closeBtn.addEventListener('click', function(){ closeNewAssignModal(); }); }
+  // 刻意不綁「點背景關閉」：規格要求一定要按下那顆叉叉才關得掉
+})();
+
 function setRecountUserName(name){
   try{ localStorage.setItem(RECOUNT_USERNAME_KEY, (name || "").trim()); }catch(e){}
 }
@@ -2136,6 +2225,7 @@ async function init(){
   render();
   startAutoSync(); // 啟動背景自動同步
   loadErpMaps();   // 背景讀取 ERP 對照表，不等待
+  checkNewAssignmentAlert(); // 開啟時先看有沒有還沒提醒過的任務
 }
 
 // 自動同步：每 SYNC_INTERVAL_MS 毫秒去後端拉一次最新資料，更新其他人填的數字到本地畫面
@@ -2342,6 +2432,10 @@ async function syncFromBackend(){
     });
     state.counts = newCounts;
     lastSyncTime = Date.now();
+
+    // 有新指派給「這台手機的身分」的複盤格子就跳警示。放在重畫前面，
+    // 因為盤點／複盤畫面底下刻意不重畫，不能依賴 render() 把它帶出來
+    checkNewAssignmentAlert();
 
     // 重畫畫面（但不重畫 counting 跟 summary，避免破壞使用者操作狀態）
     if(state.view === "home"){
@@ -5244,6 +5338,7 @@ function bindEvents(){
         state.pickIdentityReturn = null;
         showToast('已設定盤點身分為「'+pickedName+'」');
         render();
+        checkNewAssignmentAlert(); // 換成這個身分後，立刻看有沒有他的任務
       }
 
       else if(action === 'pick-identity-cancel'){
